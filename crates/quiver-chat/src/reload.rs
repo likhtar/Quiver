@@ -4,7 +4,9 @@
 //! or an invalid channel login REJECT the whole reload — the running
 //! config stays untouched. There is no half-applied state, ever.
 
-use notify::Watcher as _;
+use notify::{EventKind, Watcher as _};
+use notify_debouncer_full::DebouncedEvent;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,6 +22,25 @@ use crate::live::{Action, LiveConfig, SharedLive, planned_actions};
 use crate::serve::SharedBadges;
 
 const DEBOUNCE: Duration = Duration::from_millis(500);
+
+/// Does this debounced batch mean the config file actually changed?
+///
+/// Matching the watched file name is not enough on its own. The reload
+/// path reads the config back (`quiver_config::load_from_path`), and that
+/// read raises `IN_OPEN` on the very file we watch, which notify reports
+/// as `EventKind::Access`. Treating a read as a change makes every reload
+/// schedule the next one, so a single save spins the watcher at the
+/// debounce rate until the process restarts. Only change-producing kinds
+/// may pass.
+fn batch_touches_config(events: &[DebouncedEvent], file_name: &OsStr, watch_file: &Path) -> bool {
+    events.iter().any(|e| {
+        if matches!(e.kind, EventKind::Access(_)) {
+            return false;
+        }
+        e.paths.iter().any(|p| p.file_name() == Some(file_name))
+            || e.paths.iter().any(|p| p == watch_file)
+    })
+}
 
 pub(crate) struct ReloadCtx {
     pub live: SharedLive,
@@ -77,12 +98,7 @@ pub(crate) fn spawn_watcher(config_path: PathBuf, ctx: ReloadCtx, quit: Cancella
             for res in std_rx {
                 match res {
                     Ok(events) => {
-                        if events.iter().any(|e| {
-                            e.paths
-                                .iter()
-                                .any(|p| p.file_name() == Some(file_name.as_os_str()))
-                                || e.paths.iter().any(|p| p == &watch_file)
-                        }) {
+                        if batch_touches_config(&events, &file_name, &watch_file) {
                             let _ = event_tx.send(());
                         }
                     }
@@ -503,5 +519,112 @@ async fn apply_action(ctx: &ReloadCtx, action: &Action, new_live: &LiveConfig) {
             }
         },
         Action::Rebind => ctx.rebind.notify_one(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use notify::Event;
+    use notify::event::{
+        AccessKind, AccessMode, CreateKind, DataChange, MetadataKind, ModifyKind, RemoveKind,
+        RenameMode,
+    };
+    use std::time::Instant;
+
+    fn watch_file() -> PathBuf {
+        PathBuf::from("cfg").join("chat.ron")
+    }
+
+    fn ev(kind: EventKind, path: &Path) -> DebouncedEvent {
+        DebouncedEvent::new(
+            Event::new(kind).add_path(path.to_path_buf()),
+            Instant::now(),
+        )
+    }
+
+    /// The reload path re-reads the config on every apply, which notify
+    /// reports as `Access`. A batch of reads must not schedule a reload —
+    /// otherwise each reload feeds the next and the watcher never idles.
+    #[test]
+    fn config_watch_ignores_reads() {
+        let f = watch_file();
+        let name = f.file_name().unwrap();
+
+        for kind in [
+            EventKind::Access(AccessKind::Open(AccessMode::Any)),
+            EventKind::Access(AccessKind::Read),
+            EventKind::Access(AccessKind::Close(AccessMode::Read)),
+            EventKind::Access(AccessKind::Any),
+        ] {
+            assert!(
+                !batch_touches_config(&[ev(kind, &f)], name, &f),
+                "{kind:?} on the config must not trigger a reload"
+            );
+        }
+    }
+
+    /// Real changes still reload — otherwise hot reload itself is broken.
+    #[test]
+    fn config_watch_reacts_to_changes() {
+        let f = watch_file();
+        let name = f.file_name().unwrap();
+
+        for kind in [
+            EventKind::Modify(ModifyKind::Data(DataChange::Any)),
+            EventKind::Modify(ModifyKind::Metadata(MetadataKind::Any)),
+            EventKind::Create(CreateKind::File),
+            EventKind::Remove(RemoveKind::File),
+            EventKind::Modify(ModifyKind::Name(RenameMode::To)),
+        ] {
+            assert!(
+                batch_touches_config(&[ev(kind, &f)], name, &f),
+                "{kind:?} on the config must trigger a reload"
+            );
+        }
+    }
+
+    /// Unrelated files in the same directory stay ignored, and a read
+    /// batched with a change to another file is not a config change.
+    #[test]
+    fn config_watch_ignores_other_files() {
+        let f = watch_file();
+        let name = f.file_name().unwrap();
+        let other = PathBuf::from("cfg").join("oauth.json");
+
+        assert!(!batch_touches_config(
+            &[ev(
+                EventKind::Modify(ModifyKind::Data(DataChange::Any)),
+                &other
+            )],
+            name,
+            &f
+        ));
+        assert!(!batch_touches_config(
+            &[
+                ev(EventKind::Access(AccessKind::Open(AccessMode::Any)), &f),
+                ev(EventKind::Modify(ModifyKind::Data(DataChange::Any)), &other),
+            ],
+            name,
+            &f
+        ));
+    }
+
+    /// A read batched with a real change still reloads — the debouncer
+    /// coalesces both into one batch, and dropping the batch would lose
+    /// the change.
+    #[test]
+    fn config_watch_change_survives_batched_read() {
+        let f = watch_file();
+        let name = f.file_name().unwrap();
+
+        assert!(batch_touches_config(
+            &[
+                ev(EventKind::Access(AccessKind::Open(AccessMode::Any)), &f),
+                ev(EventKind::Modify(ModifyKind::Data(DataChange::Any)), &f),
+            ],
+            name,
+            &f
+        ));
     }
 }
