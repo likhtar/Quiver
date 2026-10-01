@@ -407,10 +407,19 @@ async fn apply_action(ctx: &ReloadCtx, action: &Action, new_live: &LiveConfig) {
         }
         Action::RefreshBadges => match &new_live.creds {
             Some((id, secret)) => {
-                let map = crate::serve::load_badge_map(id, secret, &new_live.channel).await;
-                info!(badge_count = map.len(), "badge map refreshed");
-                if let Ok(mut b) = ctx.badges.write() {
-                    *b = map;
+                match crate::serve::load_badge_map(id, secret, &new_live.channel).await {
+                    Ok(map) => {
+                        info!(badge_count = map.len(), "badge map refreshed");
+                        if let Ok(mut b) = ctx.badges.write() {
+                            *b = map;
+                        }
+                    }
+                    // Keep the previous map: overwriting a healthy one with an
+                    // empty result turns a transient Helix failure into
+                    // permanent badge-less widgets.
+                    Err(e) => {
+                        warn!(error = %e, "badge refresh failed — keeping previous badges");
+                    }
                 }
             }
             None => {

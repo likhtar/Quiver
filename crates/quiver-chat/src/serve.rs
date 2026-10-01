@@ -100,12 +100,27 @@ let css_cache_dir = cfg
         role_css.as_ref(),
     );
 
-    let initial_badges = load_badge_map_opt(
-        cfg.twitch.client_id.as_deref(),
-        cfg.twitch.client_secret.as_deref(),
-        &cfg.twitch.channel,
-    )
-    .await;
+    // One fetch at boot. A failure here is NOT fatal: `spawn_badge_supervisor`
+    // below keeps retrying while the map is empty, so booting without network
+    // self-heals instead of leaving the widget badge-less until a restart.
+    let creds = cfg
+        .twitch
+        .client_id
+        .clone()
+        .zip(cfg.twitch.client_secret.clone());
+    let initial_badges = match &creds {
+        Some((id, secret)) => match load_badge_map(id, secret, &cfg.twitch.channel).await {
+            Ok(map) => map,
+            Err(e) => {
+                warn!(error = %e, "badge lookup failed at startup — retrying in background");
+                HashMap::new()
+            }
+        },
+        None => {
+            info!("no twitch api credentials configured — badges disabled");
+            HashMap::new()
+        }
+    };
     info!(badge_count = initial_badges.len(), "badge map ready");
     let badges: SharedBadges = Arc::new(RwLock::new(initial_badges));
 
@@ -141,6 +156,8 @@ let css_cache_dir = cfg
 
     let quit = CancellationToken::new();
     let rebind = Arc::new(Notify::new());
+
+    spawn_badge_supervisor(badges.clone(), live.clone(), quit.clone());
 
     // Channel-scoped Helix (reward titles, redemptions) — present only when
     // `--auth` has stored a user token for this client_id.
@@ -759,49 +776,88 @@ fn now_epoch_secs() -> u64 {
         .as_secs()
 }
 
+/// Fetch the native Twitch badge map (`set_id` -> CDN URL).
+///
+/// Returns `Err` when the LOOKUP failed (offline, bad credentials, Helix
+/// error). That is deliberately distinct from `Ok(empty)`: a caller that
+/// collapses both into one map caches a transient network blip as "this
+/// channel has no badges" and never recovers on its own.
 pub(crate) async fn load_badge_map(
     client_id: &str,
     client_secret: &str,
     channel_login: &str,
-) -> HashMap<String, String> {
-    let result = (|| async {
-        let helix = quiver_twitch::HelixClient::new(client_id, client_secret)?;
-        let broadcaster_id = match helix.user_id(channel_login).await {
-            Ok(id) => Some(id),
-            Err(e) => {
-                warn!(
-                    channel = %channel_login,
-                    error = %e,
-                    "channel id lookup failed — using global badges only"
-                );
-                None
-            }
-        };
-        helix.badge_map(broadcaster_id.as_deref()).await
-    })()
-    .await;
-
-    match result {
-        Ok(map) => map,
+) -> anyhow::Result<HashMap<String, String>> {
+    let helix = quiver_twitch::HelixClient::new(client_id, client_secret)?;
+    // A failed channel lookup is NOT fatal — the global badge set still
+    // renders without a broadcaster id.
+    let broadcaster_id = match helix.user_id(channel_login).await {
+        Ok(id) => Some(id),
         Err(e) => {
-            warn!(error = %e, "badge lookup failed — widgets will show no badges");
-            HashMap::new()
+            warn!(
+                channel = %channel_login,
+                error = %e,
+                "channel id lookup failed — using global badges only"
+            );
+            None
         }
-    }
+    };
+    Ok(helix.badge_map(broadcaster_id.as_deref()).await?)
 }
 
-async fn load_badge_map_opt(
-    client_id: Option<&str>,
-    client_secret: Option<&str>,
-    channel: &str,
-) -> HashMap<String, String> {
-    match (client_id, client_secret) {
-        (Some(id), Some(secret)) => load_badge_map(id, secret, channel).await,
-        _ => {
-            info!("no twitch api credentials configured — badges disabled");
-            HashMap::new()
+/// Exponential backoff for [`spawn_badge_supervisor`], capped at
+/// [`MAX_BACKOFF`]. Pure so the retry schedule is table-tested.
+fn badge_retry_backoff(current: Duration) -> Duration {
+    (current * 2).min(MAX_BACKOFF)
+}
+
+/// Keep retrying the native badge fetch until it succeeds.
+///
+/// The boot fetch in [`run`] happens exactly once, so a machine that starts
+/// without network (or while Twitch is unreachable) used to stay badge-less
+/// FOREVER: `planned_actions` only schedules `RefreshBadges` when the
+/// channel or the credentials change, so neither a config reload nor a
+/// SIGHUP could recover it — only a process restart could.
+///
+/// This exits as soon as the map is non-empty, so a successful boot costs no
+/// extra Helix call and there is no idle polling afterwards. Later transient
+/// failures are handled by `Action::RefreshBadges` keeping the previous map.
+fn spawn_badge_supervisor(badges: SharedBadges, live: SharedLive, quit: CancellationToken) {
+    tokio::spawn(async move {
+        let mut backoff = INITIAL_BACKOFF;
+        loop {
+            // Already populated (the boot fetch won) — nothing to supervise.
+            if badges.read().map(|b| !b.is_empty()).unwrap_or(false) {
+                return;
+            }
+            let (creds, channel) = live
+                .read()
+                .map(|l| (l.creds.clone(), l.channel.clone()))
+                .unwrap_or_default();
+            // Missing credentials is a configuration state, not a transient
+            // failure — `Action::RefreshBadges` fires when creds show up.
+            let Some((client_id, client_secret)) = creds else {
+                return;
+            };
+            match load_badge_map(&client_id, &client_secret, &channel).await {
+                Ok(map) if !map.is_empty() => {
+                    info!(badge_count = map.len(), "badge map recovered");
+                    if let Ok(mut b) = badges.write() {
+                        *b = map;
+                    }
+                    return;
+                }
+                // Helix always returns the global badge set for a valid
+                // client, so an empty map here means something is still wrong.
+                Ok(_) => warn!("badge lookup returned no badges — retrying"),
+                Err(e) => warn!(error = %e, "badge lookup failed — retrying"),
+            }
+            tokio::select! {
+                _ = quit.cancelled() => return,
+                _ = tokio::time::sleep(backoff) => {}
+            }
+            backoff = badge_retry_backoff(backoff);
         }
-    }
+    });
 }
 
 // ---- wire -----------------------------------------------------------------
@@ -1316,6 +1372,21 @@ pub(crate) async fn resolve_custom_css(
 mod tests {
     use super::*;
     use crate::config::{EmotesConfig, ThemeConfig};
+
+    #[test]
+    fn badge_retry_backoff_doubles_then_caps() {
+        // The whole point of the supervisor is that a boot without network
+        // recovers on its own, so the schedule must never stall and never
+        // grow past MAX_BACKOFF (otherwise recovery time is unbounded).
+        let mut b = INITIAL_BACKOFF;
+        let mut seen = vec![b.as_secs()];
+        for _ in 0..8 {
+            b = badge_retry_backoff(b);
+            seen.push(b.as_secs());
+        }
+        assert_eq!(seen, vec![2, 4, 8, 16, 32, 60, 60, 60, 60]);
+        assert!(b <= MAX_BACKOFF);
+    }
 
     fn live_with(custom: Option<&str>, role: Option<HashMap<String, String>>) -> LiveConfig {
         LiveConfig {
