@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use indexmap::IndexMap;
 use quiver_config::{Validate, ValidationIssue, require};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -185,8 +186,22 @@ pub struct ThemeConfig {
     /// whose sender carries that badge. Message rows get `role-<id>` classes,
     /// snippets are injected before custom_css. Common ids: broadcaster,
     /// moderator, vip, subscriber, founder.
+    ///
+    /// `IndexMap`, not `HashMap`: every snippet sets the same custom property
+    /// with the same specificity and `!important`, so the LAST injected one
+    /// wins. The widget injects them in map order, and `serde_json` is built
+    /// with `preserve_order` — a `HashMap` here would serialise in random
+    /// order and hand multi-role senders an arbitrary colour, re-rolled on
+    /// every reload. See #108.
+    ///
+    /// Order is therefore meaningful: a sender carrying several roles takes
+    /// the colour of the LAST entry that matches them. Put `broadcaster`
+    /// after `subscriber`/`founder` to keep the broadcaster colour.
+    // JSON Schema cannot express key order, so the schema keeps the
+    // order-insensitive shape; the order itself only matters on the wire.
+    #[schemars(with = "Option<std::collections::BTreeMap<String, String>>")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub role_css: Option<HashMap<String, String>>,
+    pub role_css: Option<IndexMap<String, String>>,
     /// What happens when messages overflow the container height:
     /// `prune` removes oldest messages until everything fits (OBS
     /// default), `scroll` pins a scrollable chat to the bottom.
@@ -213,7 +228,7 @@ pub fn lint_custom_css(css: &str) -> Result<(), String> {
 }
 
 /// Log a warning when user CSS fails the lint. Never fatal.
-pub(crate) fn report_css_lint(css: Option<&str>, role_css: Option<&HashMap<String, String>>) {
+pub(crate) fn report_css_lint(css: Option<&str>, role_css: Option<&IndexMap<String, String>>) {
     if let Some(css) = css
         && let Err(e) = lint_custom_css(css)
     {

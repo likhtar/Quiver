@@ -272,3 +272,44 @@ fn role_css_map_parses_with_exact_snippets() {
     );
     assert!(!roles.contains_key("subscriber"));
 }
+
+/// #108: every role_css snippet sets the same custom property at the same
+/// specificity with `!important`, so the LAST injected rule wins. The widget
+/// injects them in map order and the meta frame is serialised with
+/// `serde_json`'s `preserve_order` — a `HashMap` would therefore pick the
+/// winner at random, re-rolled on every reload. Config order must survive
+/// deserialisation so it stays the user's priority order.
+#[test]
+fn role_css_keeps_config_order_through_serde_json() {
+    // Deliberately NOT alphabetical, and broadcaster last: this is the
+    // ordering that keeps the broadcaster colour over subscriber/founder.
+    let raw = r##"
+(
+    server: ( listen: "127.0.0.1:1", ),
+    twitch: ( channel: "chan", ),
+    theme: (
+        font_size_px: 18,
+        max_messages: 30,
+        message_lifetime_secs: 60,
+        role_css: Some({
+            "subscriber": ".msg.role-subscriber { --c: #ffd700 !important; }",
+            "founder": ".msg.role-founder { --c: #ffd700 !important; }",
+            "broadcaster": ".msg.role-broadcaster { --c: #ff4500 !important; }",
+        }),
+    ),
+)
+"##;
+    let cfg: ChatConfig = parse_str(raw).expect("role_css must parse");
+
+    // Order straight out of the deserialiser.
+    let roles = cfg.theme.role_css.expect("map present");
+    let keys: Vec<&str> = roles.keys().map(String::as_str).collect();
+    assert_eq!(keys, ["subscriber", "founder", "broadcaster"]);
+
+    // And — the part that actually reaches the browser — order preserved
+    // through the meta frame's serialiser.
+    let json = serde_json::to_value(&roles).expect("role_css serialises");
+    let obj = json.as_object().expect("role_css is a JSON object");
+    let wire: Vec<&str> = obj.keys().map(String::as_str).collect();
+    assert_eq!(wire, ["subscriber", "founder", "broadcaster"]);
+}
