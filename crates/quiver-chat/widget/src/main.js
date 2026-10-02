@@ -298,20 +298,7 @@ function renderMessage(m) {
 function trimTo(max) {
   // Count-cap is a SANITY layer: only .msg nodes count (event banners
   // are never trimmed here), newest message always kept.
-  let msgs = 0;
-  for (const child of chat.children) {
-    if (child.classList.contains("msg")) msgs++;
-  }
-  if (msgs <= max) return;
-  // Remove oldest .msg nodes first (banners untouched).
-  for (const child of chat.children) {
-    if (msgs <= max) break;
-    if (child.classList.contains("msg")) {
-      unwatchHeight(child);
-      child.remove();
-      msgs--;
-    }
-  }
+  while (countMsgs() > max && dropOldestMsg());
 }
 
 function expire(ids) {
@@ -379,13 +366,50 @@ function countMsgs() {
   return n;
 }
 
+// Does the rendered block no longer fit the viewport?
+//
+// scrollHeight only measures overflow on the block-END edge. Content that
+// escapes past the block-START edge — which is what a container packed with
+// justify-content: flex-end produces, and what any custom_css alignment
+// override can bring back — is clipped and unreachable, and scrollHeight
+// then stays equal to clientHeight. So a scrollHeight-only check silently
+// disables pruning for those containers. Compare geometry as well: it is
+// alignment-independent, so pruning works either way.
+function chatOverflows() {
+  if (chat.scrollHeight > chat.clientHeight + 1) return true;
+  const oldest = chat.querySelector(".msg");
+  if (!oldest) return false;
+  const containerTop = chat.getBoundingClientRect().top;
+  return oldest.getBoundingClientRect().top < containerTop - 0.5;
+}
+
+// Remove the oldest rendered message: the DOM node AND its `history` entry.
+//
+// Both, because rerender() rebuilds the whole chat from `history` on every
+// hot config reload. Pruning the DOM alone leaves `history` holding rows the
+// viewer can no longer see, and they reappear on the next reload frame (or on
+// the next WS reconnect, via the server's snapshot) before being pruned all
+// over again. Event banners are never touched — prune the front, keep the
+// newest message.
+function dropOldestMsg() {
+  for (const child of chat.children) {
+    if (!child.classList.contains("msg")) continue;
+    const id = child.dataset.id;
+    unwatchHeight(child);
+    child.remove();
+    if (id) history = history.filter((m) => m.id !== id);
+    return true;
+  }
+  return false;
+}
+
 function settleOverflow() {
   // Scroll mode: pin to bottom (only when already pinned / overflowing).
   if (overflowMode === "scroll") {
     const pinned =
       chat.scrollTop + chat.clientHeight >= chat.scrollHeight - 1 ||
       chat.scrollTop === 0;
-    if (pinned && chat.scrollHeight > chat.clientHeight) {
+    if (pinned && chatOverflows()) {
       chat.scrollTop = chat.scrollHeight;
     }
     return;
@@ -394,18 +418,8 @@ function settleOverflow() {
   // Prune mode: while content overflows AND more than one .msg exists,
   // drop the oldest .msg (banners and the newest message survive).
   let guard = 100; // bound the loop (safety against pathological heights)
-  while (
-    chat.scrollHeight > chat.clientHeight + 1 &&
-    countMsgs() > 1 &&
-    guard-- > 0
-  ) {
-    for (const c of chat.children) {
-      if (c.classList.contains("msg")) {
-        unwatchHeight(c);
-        c.remove();
-        break;
-      }
-    }
+  while (chatOverflows() && countMsgs() > 1 && guard-- > 0) {
+    if (!dropOldestMsg()) break;
   }
 }
 
