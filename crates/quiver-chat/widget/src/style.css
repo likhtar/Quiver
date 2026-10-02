@@ -14,25 +14,22 @@ body {
 #chat {
   display: flex;
   flex-direction: column;
-  /* Top-anchored, with the batch glued to the bottom by the
-     `.msg:first-child { margin-top: auto }` rule below — deliberately NOT
-     `justify-content: flex-end`.
+  /* Anchor the message block to the bottom edge: DOM order stays
+     oldest→newest (prune/backfill work on the front), but content packs to
+     the bottom. When a row leaves, the batch stays glued to the bottom — no
+     visual jump. Overflow clips at the TOP, so the newest message is always
+     fully visible.
 
-     flex-end looks like an equivalent way to pin the block to the bottom,
-     but it breaks overflow measurement. Content taller than the container
-     escapes past the block-START edge, which is outside the container's
-     scrollable overflow region: scrollHeight stays equal to clientHeight,
-     so settleOverflow() can never observe the overflow, prune never
-     removes anything, and the oldest rows stay clipped off the top
-     indefinitely. Scroll overflow mode is dead for the same reason —
-     maxScrollTop stays 0 and nothing is reachable by scrolling.
+     The anchor has to live on the CONTAINER, never on a row: a
+     `.msg { margin: 0 !important }` in custom_css cancels a
+     `margin-top: auto` row anchor whatever the specificity — an !important
+     declaration beats any non-important one — and the whole chat then falls
+     to the top edge. Do not move this onto `.msg:first-child`.
 
-     With flex-start the overflow lands on the block-END edge, where
-     scrollHeight does measure it, and the auto top margin keeps the block
-     visually pinned to the bottom whenever the content actually fits.
-     DOM order stays oldest→newest, so prune/expire still work on the
-     front and removing the oldest row causes no visual jump. */
-  justify-content: flex-start;
+     Overflow escaping at the block-start edge is outside the container's
+     scrollable overflow region, so scrollHeight cannot see it and stays
+     equal to clientHeight — chatOverflows() compares geometry instead. */
+  justify-content: flex-end;
   gap: 4px;
   padding: 8px;
   overflow: hidden;
@@ -42,21 +39,15 @@ body {
   height: 100vh;
 }
 
-/* Bottom anchor for the message block, replacing justify-content: flex-end.
-   Pushes the batch to the bottom edge while it fits, and collapses to 0 the
-   moment it overflows (auto margins resolve to 0 once space runs out),
-   which is what hands the measurement over to scrollHeight. Same visual
-   result as flex-end, with the overflow still measurable — and it adds no
-   extra flex item, unlike a ::before spacer (which would take a `gap`
-   slot). */
-.msg:first-child {
-  margin-top: auto;
-}
-
-/* Scroll overflow mode: pinned-to-bottom scrollable chat, scrollbar hidden
+/* Scroll overflow mode: scrollable chat with the scrollbar hidden
    (programmatic scrollTop; custom_css can restyle). */
 #chat.overflow-scroll {
   overflow-y: auto;
+  /* Top-anchored on purpose: with the block packed to the bottom the scroll
+     range is zero (maxScrollTop === 0) and nothing is reachable by
+     scrolling. Over-mode prunes instead, so the bottom anchor it replaces
+     does not apply here. */
+  justify-content: flex-start;
   scrollbar-width: none; /* Firefox */
 }
 #chat.overflow-scroll::-webkit-scrollbar {

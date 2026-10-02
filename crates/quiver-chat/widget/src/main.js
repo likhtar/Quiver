@@ -297,8 +297,9 @@ function renderMessage(m) {
 
 function trimTo(max) {
   // Count-cap is a SANITY layer: only .msg nodes count (event banners
-  // are never trimmed here), newest message always kept.
-  while (countMsgs() > max && dropOldestMsg());
+  // are never trimmed here), newest message always kept. DOM-only —
+  // backfill() would otherwise immediately put the same row back.
+  while (countMsgs() > max && dropOldestRow());
 }
 
 function expire(ids) {
@@ -309,6 +310,9 @@ function expire(ids) {
     setTimeout(() => {
       unwatchHeight(node);
       node.remove();
+      // The row is gone and its slot free — pull the next archived message
+      // back in, so expiry does not leave a hole in the window.
+      settleOverflow();
     }, EXPIRE_FADE_MS);
   }
 }
@@ -319,6 +323,7 @@ function removeMessage(id) {
   if (node) {
     unwatchHeight(node);
     node.remove();
+    settleOverflow();
   }
 }
 
@@ -329,9 +334,13 @@ function removeMessage(id) {
 
 let overflowMode = "prune"; // from meta.theme
 const overflowWatch = new ResizeObserver(() => settleOverflow());
-// Bounded history of rendered wire messages, so hot config reloads can
-// re-render existing rows (badge maps / heights / emote flags change
-// live — without this, only NEW rows would show them).
+// Bounded archive of wire messages, so hot config reloads can re-render
+// existing rows (badge maps / heights / emote flags change live — without
+// this, only NEW rows would show them).
+//
+// It is the SOURCE OF TRUTH, not a mirror of the DOM: the rendered chat is a
+// window onto it (see backfill()), so height-pruning drops rows from the DOM
+// only and the archive keeps everything until the count cap evicts it.
 let history = [];
 
 function applyOverflowMode(mode) {
@@ -357,7 +366,10 @@ function rerender() {
   // Banners are in-flow (appended chronologically, newest LAST), so
   // re-appending in collected DOM order preserves their positions.
   for (const b of banners) chat.append(b);
-  requestAnimationFrame(settleOverflow);
+  // Settle SYNCHRONOUSLY: the archive holds rows that do not fit (they are
+  // pruned below), so a deferred pass would paint one frame showing messages
+  // the viewer had already scrolled past.
+  settleOverflow();
 }
 
 function countMsgs() {
@@ -383,24 +395,51 @@ function chatOverflows() {
   return oldest.getBoundingClientRect().top < containerTop - 0.5;
 }
 
-// Remove the oldest rendered message: the DOM node AND its `history` entry.
+// Drop the oldest RENDERED message from the DOM, leaving `history` alone.
 //
-// Both, because rerender() rebuilds the whole chat from `history` on every
-// hot config reload. Pruning the DOM alone leaves `history` holding rows the
-// viewer can no longer see, and they reappear on the next reload frame (or on
-// the next WS reconnect, via the server's snapshot) before being pruned all
-// over again. Event banners are never touched — prune the front, keep the
+// DOM-only on purpose. `history` is the archive the visible window is
+// projected from, so a pruned row stays recoverable and backfill() slides it
+// back in as soon as its slot is free (an expiry, a mod-delete, or a source
+// that grew). Event banners are never touched — prune the front, keep the
 // newest message.
-function dropOldestMsg() {
+function dropOldestRow() {
   for (const child of chat.children) {
     if (!child.classList.contains("msg")) continue;
-    const id = child.dataset.id;
     unwatchHeight(child);
     child.remove();
-    if (id) history = history.filter((m) => m.id !== id);
     return true;
   }
   return false;
+}
+
+// Fill free space with the next-oldest archived messages, so the rendered
+// window always spans as far back as the viewport allows.
+//
+// The window is the newest contiguous slice of `history` that fits: pruning
+// takes rows off the front, and this puts the next archived row back at the
+// same position when a row leaves. Bounded by maxMessages and by the layout
+// itself (each candidate is measured, and dropped again if it overflows), so
+// it cannot loop forever or grow past what the viewer can see.
+function backfill() {
+  let guard = 100; // bound the loop (safety against pathological heights)
+  while (guard-- > 0) {
+    if (countMsgs() >= maxMessages) return;
+    const oldest = chat.querySelector(".msg");
+    // Nothing rendered yet: the next message appends at the end anyway.
+    if (!oldest) return;
+    const oldestId = oldest.dataset.id;
+    const boundary = history.findIndex((m) => m.id === oldestId);
+    // Already showing the oldest archived message (or it is not in the
+    // archive any more, e.g. evicted by the count cap) — nothing to add.
+    if (boundary <= 0) return;
+    const node = renderMessage(history[boundary - 1]);
+    chat.insertBefore(node, oldest);
+    if (chatOverflows()) {
+      unwatchHeight(node);
+      node.remove();
+      return; // no room for another one either
+    }
+  }
 }
 
 function settleOverflow() {
@@ -419,8 +458,10 @@ function settleOverflow() {
   // drop the oldest .msg (banners and the newest message survive).
   let guard = 100; // bound the loop (safety against pathological heights)
   while (chatOverflows() && countMsgs() > 1 && guard-- > 0) {
-    if (!dropOldestMsg()) break;
+    if (!dropOldestRow()) break;
   }
+  // Pruning leaves free space; fill it from the archive.
+  backfill();
 }
 
 function applyMeta(meta) {
@@ -594,7 +635,9 @@ function handle(wire) {
       history = wire.messages || [];
       for (const c of chat.children) unwatchHeight(c);
       chat.replaceChildren(...history.map(renderMessage));
-      requestAnimationFrame(settleOverflow);
+      // Synchronous for the same reason as rerender(): the snapshot is the
+      // whole archive, so deferring paints rows that do not fit.
+      settleOverflow();
       break;
     case "message":
       // Dedupe by id: on WS join/resync there is a small race window (a
