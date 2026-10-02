@@ -21,6 +21,8 @@ clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 # preserve_order: schemars properties + generated configs keep declaration order
 serde_json = { version = "1", features = ["preserve_order"] }
+# role_css must serialise in config order, not HashMap order — see #108.
+indexmap = { version = "2", features = ["serde"] }
 ron = "0.12"
 schemars = "1"
 

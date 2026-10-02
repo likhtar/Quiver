@@ -1372,6 +1372,7 @@ pub(crate) async fn resolve_custom_css(
 mod tests {
     use super::*;
     use crate::config::{EmotesConfig, ThemeConfig};
+    use indexmap::IndexMap;
 
     #[test]
     fn badge_retry_backoff_doubles_then_caps() {
@@ -1388,7 +1389,7 @@ mod tests {
         assert!(b <= MAX_BACKOFF);
     }
 
-    fn live_with(custom: Option<&str>, role: Option<HashMap<String, String>>) -> LiveConfig {
+    fn live_with(custom: Option<&str>, role: Option<IndexMap<String, String>>) -> LiveConfig {
         LiveConfig {
             listen: "127.0.0.1:1".into(),
             widget_dist: None,
@@ -1412,7 +1413,7 @@ mod tests {
     /// Ground truth by hand: meta mirrors exactly what was passed in.
     #[test]
     fn meta_carries_custom_and_role_css() {
-        let mut roles = HashMap::new();
+        let mut roles = IndexMap::new();
         roles.insert("moderator".to_string(), ".msg{}".to_string());
         let live = live_with(Some("/*c*/"), Some(roles));
         let m = meta_value(&live, &HashMap::new(), None, Some("/*c*/"));
@@ -1420,6 +1421,49 @@ mod tests {
         assert_eq!(m["custom_css"], "/*c*/");
         assert_eq!(m["role_css"]["moderator"], ".msg{}");
         assert_eq!(m["theme"]["font_size_px"], 18);
+    }
+
+    /// #108: the meta frame is what the widget injects, and it injects the
+    /// snippets in object order. Equal specificity + `!important` means the
+    /// last one wins, so config order IS priority order — it must survive
+    /// `serde_json`'s `preserve_order` serialisation.
+    #[test]
+    fn meta_role_css_keeps_config_order() {
+        // Seven keys on purpose: a two-key map has a 50% chance of hashing
+        // into the same order it was inserted in, which would let a HashMap
+        // slip past this test.
+        let mut roles = IndexMap::new();
+        for (role, colour) in [
+            ("subscriber", "#ffd700"),
+            ("founder", "#ffd700"),
+            ("vip", "#e040fb"),
+            ("moderator", "#00ff7f"),
+            ("lead_moderator", "#8b4513"),
+            ("global_mod", "#8b4513"),
+            ("broadcaster", "#ff4500"),
+        ] {
+            roles.insert(
+                role.to_string(),
+                format!("div.msg.role-{role} {{ --c: {colour} !important; }}"),
+            );
+        }
+        let live = live_with(None, Some(roles));
+        let m = meta_value(&live, &HashMap::new(), None, None);
+
+        let obj = m["role_css"].as_object().expect("role_css object");
+        let keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+        assert_eq!(
+            keys,
+            [
+                "subscriber",
+                "founder",
+                "vip",
+                "moderator",
+                "lead_moderator",
+                "global_mod",
+                "broadcaster",
+            ]
+        );
     }
 
     #[test]
