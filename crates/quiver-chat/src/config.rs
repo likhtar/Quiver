@@ -284,8 +284,47 @@ pub struct ListFilter {
     pub items: Vec<String>,
 }
 
-/// Message filtering rules. Dimensions combine with AND: a message is
-/// rendered only when EVERY active dimension passes.
+/// What a matching override rule does: `allow` renders the message (the
+/// exception — beats the denylist dimensions), `deny` drops it (an extra
+/// ban — beats the allowlist dimensions). An unknown action name fails
+/// config parsing, exactly like an unknown `message_type` kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum OverrideAction {
+    Allow,
+    Deny,
+}
+
+/// One per-user content rule (the `filters.overrides` list entry).
+///
+/// Every PRESENT condition must match (AND); an absent condition is a
+/// wildcard. A rule with NO conditions at all is inactive and never
+/// decides — the parity of an empty `items` list in the base dimensions.
+/// Rules run BEFORE the base dimensions, in config order: the FIRST
+/// matching rule gives the final decision and the dimensions below are
+/// never consulted for that message.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct FilterOverride {
+    /// What the matching message gets: `allow` (render) or `deny` (drop).
+    pub action: OverrideAction,
+    /// EXACT match against the sender's Twitch user id (numeric string);
+    /// regex metacharacters are literal, as in `filters.user_id`.
+    #[serde(default)]
+    pub user_id: Option<String>,
+    /// Regex matched against the sender's login name (always lowercase).
+    #[serde(default)]
+    pub username: Option<String>,
+    /// Regex matched against the sender's display name.
+    #[serde(default)]
+    pub display_name: Option<String>,
+    /// Regex matched against the message text (events have empty text).
+    #[serde(default)]
+    pub content: Option<String>,
+}
+
+/// Message filtering rules. `overrides` are checked first (first match
+/// wins, final decision); the remaining dimensions combine with AND: a
+/// message is rendered only when EVERY active dimension passes.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct FiltersConfig {
     /// Regex matched against the sender's display name.
@@ -303,6 +342,16 @@ pub struct FiltersConfig {
     /// Badge ids carried by the sender — same vocabulary as role_css
     /// (moderator, vip, subscriber, ...). Events carry no badges in v1.
     pub role: Option<ListFilter>,
+    /// Per-user content rules checked BEFORE the dimensions above: the
+    /// FIRST rule whose conditions all match decides `allow`/`deny` for
+    /// that message and the dimensions never run for it. This is how
+    /// AND-combined dimensions get exceptions ("hide everything from
+    /// this user except ...") and extra bans ("drop this text except
+    /// for ..."). Empty list = no rules; a rule without any condition is
+    /// inactive. Empty/invalid patterns are config errors, like the
+    /// dimensions.
+    #[serde(default)]
+    pub overrides: Vec<FilterOverride>,
 }
 
 fn default_refresh_interval() -> u64 {
@@ -490,6 +539,44 @@ impl Validate for ChatConfig {
                              message, sub, gift_sub, mystery_gift, raid, redeem,
                              hype_train, prediction, poll, follow"
                         ),
+                    });
+                }
+            }
+        }
+        // Override rules: same contract as the dimensions — empty or
+        // non-compiling patterns are hard errors (they would silently
+        // re-decide moderation outcomes otherwise). `user_id` is an exact
+        // match: an empty value can never match a real id, so the rule
+        // would be dead code. An unknown `action` never reaches this
+        // point — the enum rejects it at parse time.
+        for (i, rule) in f.overrides.iter().enumerate() {
+            let base = format!("filters.overrides[{i}]");
+            for (field, value) in [
+                ("user_id", &rule.user_id),
+                ("username", &rule.username),
+                ("display_name", &rule.display_name),
+                ("content", &rule.content),
+            ] {
+                let Some(value) = value else { continue };
+                if value.is_empty() {
+                    out.push(ValidationIssue {
+                        path: format!("{base}.{field}"),
+                        message: if field == "user_id" {
+                            "empty user id matches nothing \u{2014} refusing (likely a config error)"
+                                .to_string()
+                        } else {
+                            "empty pattern matches every message \u{2014} refusing (likely a config error)"
+                                .to_string()
+                        },
+                    });
+                    continue;
+                }
+                if field != "user_id"
+                    && let Err(e) = regex::Regex::new(value)
+                {
+                    out.push(ValidationIssue {
+                        path: format!("{base}.{field}"),
+                        message: format!("invalid regex {value:?}: {e}"),
                     });
                 }
             }
