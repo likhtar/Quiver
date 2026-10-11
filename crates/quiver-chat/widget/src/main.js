@@ -13,6 +13,8 @@ const EMOTE_CDN_V2 = "https://static-cdn.jtvnw.net/emoticons/v2/{id}/default/dar
 let badgeUrls = {}; // "set_id/version" -> image url
 let maxMessages = 30;
 let roleCss = {}; // badge set id -> css snippet for message rows
+let eventNames = {}; // event kind/reward -> display name
+
 // provider tag -> {emote name -> url}; always fully populated, gating is
 // done client-side via emoteFlags so disabled providers STRIP tokens.
 let thirdParty = {};
@@ -473,6 +475,8 @@ function applyMeta(meta) {
   // sheet — forgetting to store it here meant styles existed but no row
   // ever matched them.
   roleCss = meta.role_css || {};
+  if (meta.event_names) eventNames = meta.event_names;
+  else eventNames = {};
   if (meta.theme) {
     if (meta.theme.font_size_px) chat.style.fontSize = `${meta.theme.font_size_px}px`;
     if (meta.theme.max_messages) maxMessages = meta.theme.max_messages;
@@ -535,6 +539,22 @@ const EVENT_STYLES = {
 };
 let eventBannerMs = 8000;
 
+function hexToRgba(hex, alpha) {
+  if (!hex) return null;
+  let h = hex.trim();
+  if (h.startsWith("#")) h = h.slice(1);
+  if (h.length === 3) {
+    const r = h[0], g = h[1], b = h[2];
+    h = r + r + g + g + b + b;
+  }
+  const num = parseInt(h, 16);
+  if (isNaN(num)) return null;
+  const r = (num >> 16) & 0xff;
+  const g = (num >> 8) & 0xff;
+  const b = num & 0xff;
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
 function showEvent(ev) {
   const style = EVENT_STYLES[ev.kind];
   if (!style) return;
@@ -542,8 +562,8 @@ function showEvent(ev) {
   // happened. Kind-specific class (`.event-redeem`, …) is the CSS hook
   // for custom styling; inline bg/border stay as the default look.
   const banner = el("div", `event event-${ev.kind}`);
-  banner.style.background = style.bg;
-  banner.style.borderColor = style.border;
+  banner.style.background = ev.reward_color ? hexToRgba(ev.reward_color, 0.22) || style.bg : style.bg;
+  banner.style.borderColor = ev.reward_color || style.border;
 
   let text = "";
   switch (ev.kind) {
@@ -590,7 +610,17 @@ function showEvent(ev) {
       text = `${ev.display_name} just followed!`;
       break;
   }
-  // Icon: redeems (and any event carrying a reward image) show the REAL
+
+  let eventName = null;
+  if (ev.kind === "redeem" && ev.reward_id) {
+    eventName = eventNames["reward:" + ev.reward_id] || eventNames[ev.kind];
+  } else {
+    eventName = eventNames[ev.kind];
+  }
+  if (eventName) {
+    banner.append(el("span", "event-name", eventName));
+  }
+
   // Twitch reward icon — the server coalesces the channel coin for
   // default-icon rewards. The SVG coin is the last-resort fallback.
   if (ev.reward_image) {
