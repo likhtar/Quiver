@@ -621,6 +621,7 @@ function showEvent(ev) {
     banner.append(el("span", "event-name", eventName));
   }
 
+  const body = el("div", "event-body");
   // Twitch reward icon — the server coalesces the channel coin for
   // default-icon rewards. The SVG coin is the last-resort fallback.
   if (ev.reward_image) {
@@ -628,7 +629,7 @@ function showEvent(ev) {
     icon.className = "event-icon event-icon-img";
     icon.src = ev.reward_image;
     icon.alt = "";
-    banner.append(icon);
+    body.append(icon);
   } else if (ev.kind === "redeem") {
     const icon = document.createElement("span");
     icon.className = "event-icon";
@@ -638,11 +639,12 @@ function showEvent(ev) {
       '<circle cx="8" cy="8" r="7.2" fill="#FABE2E" stroke="#9147FF" stroke-width="1.6"/>' +
       '<path d="M11.4 5.2c-.5-.5-1.4-.9-3.4-.9-1.4 0-2.6.4-3.4.9L3.2 8l1.4 2.8c.8.5 2 .9 3.4.9s2.6-.4 3.4-.9L12.8 8l-1.4-2.8z" fill="#9147FF"/>' +
       "</svg>";
-    banner.append(icon);
+    body.append(icon);
   } else {
-    banner.append(el("span", "event-icon", style.icon));
+    body.append(el("span", "event-icon", style.icon));
   }
-  banner.append(el("span", "event-text", text));
+  body.append(el("span", "event-text", text));
+  banner.append(body);
 
   // In-flow: banners appear WHERE they happened (chronological bottom of
   // the stream), not pinned above everything.
