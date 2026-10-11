@@ -345,11 +345,23 @@ impl HelixClient {
             title: String,
             #[serde(default)]
             image: Option<RewardImage>,
+            #[serde(default)]
+            background_color: Option<String>,
         }
         #[derive(serde::Deserialize)]
         struct RewardImage {
             #[serde(rename = "url_2x")]
             url_2x: Option<String>,
+        }
+
+        fn normalize_hex(h: Option<String>) -> Option<String> {
+            let mut h = h?;
+            if h.is_empty() { return None; }
+            if !h.starts_with('#') {
+                h.insert(0, '#');
+            }
+            // Helix returns 6-hex usually; normalize
+            Some(h)
         }
 
         let parsed: RewardsResponse = self
@@ -369,6 +381,7 @@ impl HelixClient {
                         // 2x preferred; Twitch returns null image for
                         // rewards using the default icon.
                         image_url: r.image.and_then(|i| i.url_2x),
+                        background_color: normalize_hex(r.background_color),
                     },
                 )
             })
@@ -451,6 +464,7 @@ fn parse_coin_icon(v: &serde_json::Value) -> Option<String> {
 pub struct RewardInfo {
     pub title: String,
     pub image_url: Option<String>,
+    pub background_color: Option<String>,
 }
 
 /// A channel point redemption (from the GET redemptions endpoint).

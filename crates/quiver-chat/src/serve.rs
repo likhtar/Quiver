@@ -333,9 +333,9 @@ let css_cache_dir = cfg
                                 .read()
                                 .ok()
                                 .and_then(|m| m.get(&r.reward_id).cloned());
-                            let (title, mut image) = info
-                                .map(|i| (Some(i.title), i.image_url))
-                                .unwrap_or((None, None));
+                            let (title, mut image, color) = info
+                                .map(|i| (Some(i.title), i.image_url, i.background_color))
+                                .unwrap_or((None, None, None));
                             // Cache miss = reward added mid-stream: trigger
                             // the reactive refresher (cooldown in refresher).
                             if title.is_none() {
@@ -363,6 +363,8 @@ let css_cache_dir = cfg
                                     "display_name": r.user_display_name,
                                     "reward_title": title,
                                     "reward_image": image,
+                                    "reward_color": color,
+                                    "reward_id": r.reward_id,
                                     "user_input": r.user_input,
                                 }
                             });
@@ -831,6 +833,7 @@ pub(crate) fn meta_value(
             "ffz": live.emotes.ffz,
         },
         "custom_badges": custom_badges,
+        "event_names": live.theme.event_names,
     })
 }
 
@@ -1333,6 +1336,7 @@ mod tests {
                 role_css: role,
                 overflow_mode: crate::config::OverflowMode::Prune,
                 event_banner_secs: 8,
+                event_names: None,
             },
             emotes: EmotesConfig::default(),
         }

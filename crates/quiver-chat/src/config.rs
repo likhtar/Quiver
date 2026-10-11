@@ -197,6 +197,10 @@ pub struct ThemeConfig {
     /// they are scrolled away by later messages (no auto-dismiss).
     #[serde(default = "default_event_banner_secs")]
     pub event_banner_secs: u64,
+    /// Custom names for event banners displayed in widget.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub event_names: Option<HashMap<String, String>>,
 }
 
 fn default_event_banner_secs() -> u64 {
@@ -245,6 +249,7 @@ impl Default for ThemeConfig {
             role_css: None,
             overflow_mode: OverflowMode::Prune,
             event_banner_secs: default_event_banner_secs(),
+            event_names: None,
         }
     }
 }
