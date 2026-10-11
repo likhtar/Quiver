@@ -563,6 +563,7 @@ function showEvent(ev) {
   // for custom styling; inline bg/border stay as the default look.
   const banner = el("div", `event event-${ev.kind}`);
   banner.style.background = ev.reward_color ? hexToRgba(ev.reward_color, 0.22) || style.bg : style.bg;
+  banner.style.setProperty('--event-bg', ev.reward_color || 'transparent');
   banner.style.borderColor = ev.reward_color || style.border;
 
   let text = "";
