@@ -39,8 +39,10 @@ widget substitutes each token in order; literal characters stay as-is.
 ```ron
 theme: (
     event_layout: (
-        redeem: "{points_icon} {user} redeemed {reward_icon} {reward}{input_clause}",
+        redeem: "{reward_icon} {user} redeemed {points_icon} {reward}{input_clause}",
         cheer:  "{bits_icon} {user} cheered {bits} bits{message_clause}",
+        // Event-name pill for redeem/cheer; true by default.
+        event_name: true,
     ),
 ),
 ```
@@ -49,8 +51,8 @@ Tokens:
 
 | Token | redeem | cheer | Renders as |
 |---|---|---|---|
-| `{points_icon}` | ✓ | — | channel-points icon (channel coin, else coin SVG) |
-| `{reward_icon}` | ✓ | — | reward icon (else coin SVG) |
+| `{points_icon}` | ✓ | — | channel-points coin from Twitch (custom image, else default orb); omitted when unknown |
+| `{reward_icon}` | ✓ | — | the reward's own Twitch icon; omitted when the reward uses Twitch's default icon |
 | `{reward}` | ✓ | — | reward name (fallback "a channel point reward") |
 | `{bits_icon}` | — | ✓ | bits badge for the amount (else 💠) |
 | `{bits}` | — | ✓ | cheer amount |
@@ -69,8 +71,13 @@ Notes:
   braces are not supported.
 - Use `{input_clause}` / `{message_clause}` instead of `{input}` /
   `{message}` to avoid a dangling `": "` when the value is empty.
-- In `redeem`, `{points_icon}` and `{reward_icon}` are usually the same for
-  a default-icon reward (both fall back to the channel coin).
+- `{points_icon}` is the channel's points coin (your custom coin, else
+  Twitch's default orb) and `{reward_icon}` is the reward's own icon — two
+  different images. Both are fetched from Twitch; neither is drawn locally.
+  A reward without its own icon simply has no `{reward_icon}`.
+- `event_layout.event_name` (`true` by default) toggles the event-name pill
+  for `redeem`/`cheer` only. Other kinds keep their pill. The pill text
+  comes from `theme.event_names` (`reward:<id>`, else the kind).
 - An empty template string falls back to the built-in default for that kind.
 
 Related surfaces:

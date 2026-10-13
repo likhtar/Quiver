@@ -196,6 +196,12 @@ pub struct EventLayout {
     /// Example: "{bits_icon} {user} cheered {bits} bits{message_clause}"
     #[serde(default = "default_cheer_layout")]
     pub cheer: String,
+    /// Whether to show the event-name pill for the templated kinds
+    /// (redeem/cheer). The pill text comes from `theme.event_names`
+    /// (`reward:<id>` or the kind). `true` (default) keeps it; `false`
+    /// hides it for these kinds only — other kinds are unaffected.
+    #[serde(default = "default_true")]
+    pub event_name: bool,
 }
 
 impl Default for EventLayout {
@@ -203,6 +209,7 @@ impl Default for EventLayout {
         Self {
             redeem: default_redeem_layout(),
             cheer: default_cheer_layout(),
+            event_name: true,
         }
     }
 }

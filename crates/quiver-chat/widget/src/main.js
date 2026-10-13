@@ -559,19 +559,6 @@ function hexToRgba(hex, alpha) {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
-// Channel-points coin: gold circle with the Twitch glitch. Last-resort
-// icon when no real channel/reward image URL is available.
-function coinIcon() {
-  const icon = document.createElement("span");
-  icon.className = "event-icon";
-  icon.innerHTML =
-    '<svg viewBox="0 0 16 16" width="1.4em" height="1.4em" style="vertical-align:middle">' +
-    '<circle cx="8" cy="8" r="7.2" fill="#FABE2E" stroke="#9147FF" stroke-width="1.6"/>' +
-    '<path d="M11.4 5.2c-.5-.5-1.4-.9-3.4-.9-1.4 0-2.6.4-3.4.9L3.2 8l1.4 2.8c.8.5 2 .9 3.4.9s2.6-.4 3.4-.9L12.8 8l-1.4-2.8z" fill="#9147FF"/>' +
-    "</svg>";
-  return icon;
-}
-
 // Bits badge tier by amount (Twitch badge versions).
 function bitsTier(bits) {
   const n = Number(bits) || 0;
@@ -598,9 +585,10 @@ function bitsIcon(bits) {
 }
 
 // Built-in icon when no template is configured (or the template is empty).
+// Only real Twitch images are used; a reward without its own icon has no
+// leading icon (the channel coin is reserved for the `{points_icon}` token).
 function defaultEventIcon(ev, style) {
   if (ev.reward_image) return imageIcon(ev.reward_image);
-  if (ev.kind === "redeem") return coinIcon();
   if (ev.kind === "cheer") return bitsIcon(ev.bits);
   return el("span", "event-icon", style.icon);
 }
@@ -668,9 +656,12 @@ function tokenNode(token, ev) {
     case "bits":
       return el("span", "event-text", String(ev.bits ?? ""));
     case "points_icon":
-      return ev.points_image ? imageIcon(ev.points_image) : coinIcon();
+      // Channel coin from Twitch (custom image, else the default orb).
+      // Rendered only when known; never a locally drawn substitute.
+      return ev.points_image ? imageIcon(ev.points_image) : null;
     case "reward_icon":
-      return ev.reward_image ? imageIcon(ev.reward_image) : coinIcon();
+      // The reward's own Twitch icon; absent for default-icon rewards.
+      return ev.reward_image ? imageIcon(ev.reward_image) : null;
     case "bits_icon":
       return bitsIcon(ev.bits);
     default:
@@ -708,14 +699,23 @@ function showEvent(ev) {
   banner.style.background = ev.reward_color ? hexToRgba(ev.reward_color, 0.22) || style.bg : style.bg;
   banner.style.setProperty('--event-bg', ev.reward_color || 'transparent');
   banner.style.borderColor = ev.reward_color || style.border;
+  // Expose the Twitch reward colour as a custom property too, so custom CSS
+  // (border/shadow) can follow it. Inline wins over per-kind CSS defaults.
+  if (ev.reward_color) {
+    banner.style.setProperty('--event-border-color', ev.reward_color);
+  }
 
+  // The templated kinds (redeem/cheer) can opt out of the name pill via
+  // theme.event_layout.event_name; other kinds keep it.
+  const templated = ev.kind === "redeem" || ev.kind === "cheer";
+  const showName = templated ? eventLayout.event_name !== false : true;
   let eventName = null;
   if (ev.kind === "redeem" && ev.reward_id) {
     eventName = eventNames["reward:" + ev.reward_id] || eventNames[ev.kind];
   } else {
     eventName = eventNames[ev.kind];
   }
-  if (eventName) {
+  if (showName && eventName) {
     banner.append(el("span", "event-name", eventName));
   }
   // Sub messages keep their text as a tooltip (title), as before.

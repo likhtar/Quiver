@@ -350,7 +350,7 @@ let css_cache_dir = cfg
                                 .read()
                                 .ok()
                                 .and_then(|m| m.get(&r.reward_id).cloned());
-                            let (title, mut image, color) = info
+                            let (title, image, color) = info
                                 .map(|i| (Some(i.title), i.image_url, i.background_color))
                                 .unwrap_or((None, None, None));
                             // Cache miss = reward added mid-stream: trigger
@@ -358,11 +358,9 @@ let css_cache_dir = cfg
                             if title.is_none() {
                                 miss_for_poll.notify_one();
                             }
-                            // Default-icon rewards: channel coin fallback.
+                            // Channel-points coin, kept apart from the reward
+                            // icon (`{points_icon}` only).
                             let points = coin_for_poll.read().ok().and_then(|c| c.clone());
-                            if image.is_none() {
-                                image = points.clone();
-                            }
                             if !crate::filters::CompiledFilters::permits_event(
                                 &filters_for_poll,
                                 crate::filters::MsgKind::Redeem,
