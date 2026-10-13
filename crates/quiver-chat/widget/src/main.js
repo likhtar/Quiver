@@ -14,6 +14,7 @@ let badgeUrls = {}; // "set_id/version" -> image url
 let maxMessages = 30;
 let roleCss = {}; // badge set id -> css snippet for message rows
 let eventNames = {}; // event kind/reward -> display name
+let eventLayout = {}; // event kind -> "{token}" banner template
 
 // provider tag -> {emote name -> url}; always fully populated, gating is
 // done client-side via emoteFlags so disabled providers STRIP tokens.
@@ -422,6 +423,8 @@ function applyMeta(meta) {
   roleCss = meta.role_css || {};
   if (meta.event_names) eventNames = meta.event_names;
   else eventNames = {};
+  if (meta.event_layout) eventLayout = meta.event_layout;
+  else eventLayout = {};
   if (meta.theme) {
     if (meta.theme.font_size_px) chat.style.fontSize = `${meta.theme.font_size_px}px`;
     if (meta.theme.max_messages) maxMessages = meta.theme.max_messages;
@@ -477,6 +480,7 @@ const EVENT_STYLES = {
   mystery_gift: { icon: "🎁🎁", bg: "rgba(145,70,255,.22)", border: "#9146FF" },
   raid: { icon: "⚔", bg: "rgba(255,140,0,.22)", border: "#FF8C00" },
   redeem: { icon: "🏅", bg: "rgba(0,180,216,.22)", border: "#00B4D8" },
+  cheer: { icon: "💠", bg: "rgba(145,70,255,.20)", border: "#9146FF" },
   hype_train: { icon: "🚂", bg: "rgba(255,0,110,.22)", border: "#FF006E" },
   prediction: { icon: "📊", bg: "rgba(0,120,255,.18)", border: "#0078FF" },
   poll: { icon: "🗳️", bg: "rgba(0,200,120,.18)", border: "#00C878" },
@@ -500,6 +504,145 @@ function hexToRgba(hex, alpha) {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
+// Channel-points coin: gold circle with the Twitch glitch. Last-resort
+// icon when no real channel/reward image URL is available.
+function coinIcon() {
+  const icon = document.createElement("span");
+  icon.className = "event-icon";
+  icon.innerHTML =
+    '<svg viewBox="0 0 16 16" width="1.4em" height="1.4em" style="vertical-align:middle">' +
+    '<circle cx="8" cy="8" r="7.2" fill="#FABE2E" stroke="#9147FF" stroke-width="1.6"/>' +
+    '<path d="M11.4 5.2c-.5-.5-1.4-.9-3.4-.9-1.4 0-2.6.4-3.4.9L3.2 8l1.4 2.8c.8.5 2 .9 3.4.9s2.6-.4 3.4-.9L12.8 8l-1.4-2.8z" fill="#9147FF"/>' +
+    "</svg>";
+  return icon;
+}
+
+// Bits badge tier by amount (Twitch badge versions).
+function bitsTier(bits) {
+  const n = Number(bits) || 0;
+  if (n >= 10000) return 10000;
+  if (n >= 5000) return 5000;
+  if (n >= 1000) return 1000;
+  if (n >= 100) return 100;
+  return 1;
+}
+
+function imageIcon(url) {
+  const img = document.createElement("img");
+  img.className = "event-icon event-icon-img";
+  img.src = url;
+  img.alt = "";
+  return img;
+}
+
+// Chosen bits badge image from the badge map (already merged global +
+// channel in meta.badges); fall back to a text diamond.
+function bitsIcon(bits) {
+  const url = badgeUrls["bits/" + bitsTier(bits)];
+  return url ? imageIcon(url) : el("span", "event-icon", "💠");
+}
+
+// Built-in icon when no template is configured (or the template is empty).
+function defaultEventIcon(ev, style) {
+  if (ev.reward_image) return imageIcon(ev.reward_image);
+  if (ev.kind === "redeem") return coinIcon();
+  if (ev.kind === "cheer") return bitsIcon(ev.bits);
+  return el("span", "event-icon", style.icon);
+}
+
+// Fallback banner text, used only when the kind has no template.
+function eventText(ev) {
+  switch (ev.kind) {
+    case "sub":
+      return ev.is_resub
+        ? `${ev.display_name} resubbed (${ev.cumulative_months} mo${ev.streak_months ? `, ${ev.streak_months} streak` : ""})`
+        : `${ev.display_name} subscribed!`;
+    case "gift_sub":
+      return `${ev.gifter_display_name || "An anonymous gifter"} gifted a sub to ${ev.recipient_display_name}`;
+    case "mystery_gift":
+      return `${ev.gifter_display_name || "An anonymous gifter"} is gifting ${ev.mass_gift_count} subs!`;
+    case "raid":
+      return `${ev.from_display_name} raided with ${ev.viewers} viewers!`;
+    case "redeem": {
+      const reward = ev.reward_title || "a channel point reward";
+      return ev.user_input
+        ? `${ev.display_name} redeemed ${reward}: ${ev.user_input}`
+        : `${ev.display_name} redeemed ${reward}`;
+    }
+    case "cheer": {
+      const base = `${ev.display_name} cheered ${ev.bits} bits`;
+      return ev.message ? `${base}: ${ev.message}` : base;
+    }
+    case "hype_train": {
+      const top = (ev.top_display_names || []).slice(0, 3).join(", ");
+      return ev.phase === "end"
+        ? `Hype Train ended at level ${ev.level}!`
+        : `Hype Train level ${ev.level} — ${ev.total}/${ev.goal}${top ? ` · ${top}` : ""}`;
+    }
+    case "prediction":
+      return ev.phase === "end"
+        ? `Prediction resolved: ${ev.title} → ${ev.winning_outcome || "?"}`
+        : `${ev.phase === "lock" ? "Predictions locked" : "Prediction started"}: ${ev.title}`;
+    case "poll":
+      return ev.phase === "end"
+        ? `Poll ended: ${ev.title}`
+        : `${ev.phase === "lock" ? "Poll locked" : "Poll started"}: ${ev.title}`;
+    case "follow":
+      return `${ev.display_name} just followed!`;
+    default:
+      return "";
+  }
+}
+
+// One template token -> DOM node (or null to omit entirely). Only built-in
+// tokens become elements; all user-controlled values are plain text.
+function tokenNode(token, ev) {
+  switch (token) {
+    case "user":
+      return el("span", "event-text", ev.display_name || "");
+    case "reward":
+      return el("span", "event-text", ev.reward_title || "a channel point reward");
+    case "input":
+      return el("span", "event-text", ev.user_input || "");
+    case "message":
+      return el("span", "event-text", ev.message || "");
+    case "input_clause":
+      return ev.user_input ? el("span", "event-text", `: ${ev.user_input}`) : null;
+    case "message_clause":
+      return ev.message ? el("span", "event-text", `: ${ev.message}`) : null;
+    case "bits":
+      return el("span", "event-text", String(ev.bits ?? ""));
+    case "points_icon":
+      return ev.points_image ? imageIcon(ev.points_image) : coinIcon();
+    case "reward_icon":
+      return ev.reward_image ? imageIcon(ev.reward_image) : coinIcon();
+    case "bits_icon":
+      return bitsIcon(ev.bits);
+    default:
+      // Unknown tokens are rejected server-side; keep a visible literal here
+      // so an unvalidated/legacy config still shows something.
+      return el("span", "event-text", `{${token}}`);
+  }
+}
+
+// Render a "{token}" template into a fragment. Literal characters become
+// TEXT nodes (never parsed as HTML); text tokens are plain text too, so a
+// crafted display name / reward title cannot inject markup.
+function renderTemplate(tpl, ev) {
+  const frag = document.createDocumentFragment();
+  const re = /\{([a-zA-Z_]+)\}/g;
+  let last = 0;
+  let m;
+  while ((m = re.exec(tpl)) !== null) {
+    if (m.index > last) frag.append(document.createTextNode(tpl.slice(last, m.index)));
+    const node = tokenNode(m[1], ev);
+    if (node) frag.append(node);
+    last = re.lastIndex;
+  }
+  if (last < tpl.length) frag.append(document.createTextNode(tpl.slice(last)));
+  return frag;
+}
+
 function showEvent(ev) {
   const style = EVENT_STYLES[ev.kind];
   if (!style) return;
@@ -511,52 +654,6 @@ function showEvent(ev) {
   banner.style.setProperty('--event-bg', ev.reward_color || 'transparent');
   banner.style.borderColor = ev.reward_color || style.border;
 
-  let text = "";
-  switch (ev.kind) {
-    case "sub":
-      text = ev.is_resub
-        ? `${ev.display_name} resubbed (${ev.cumulative_months} mo${ev.streak_months ? `, ${ev.streak_months} streak` : ""})`
-        : `${ev.display_name} subscribed!`;
-      if (ev.message) banner.title = ev.message;
-      break;
-    case "gift_sub":
-      text = `${ev.gifter_display_name || "An anonymous gifter"} gifted a sub to ${ev.recipient_display_name}`;
-      break;
-    case "mystery_gift":
-      text = `${ev.gifter_display_name || "An anonymous gifter"} is gifting ${ev.mass_gift_count} subs!`;
-      break;
-    case "raid":
-      text = `${ev.from_display_name} raided with ${ev.viewers} viewers!`;
-      break;
-    case "redeem": {
-      const reward = ev.reward_title || "a channel point reward";
-      text = ev.user_input
-        ? `${ev.display_name} redeemed ${reward}: ${ev.user_input}`
-        : `${ev.display_name} redeemed ${reward}`;
-      break;
-    }
-    case "hype_train": {
-      const top = (ev.top_display_names || []).slice(0, 3).join(", ");
-      text = ev.phase === "end"
-        ? `Hype Train ended at level ${ev.level}!`
-        : `Hype Train level ${ev.level} — ${ev.total}/${ev.goal}${top ? ` · ${top}` : ""}`;
-      break;
-    }
-    case "prediction":
-      text = ev.phase === "end"
-        ? `Prediction resolved: ${ev.title} → ${ev.winning_outcome || "?"}`
-        : `${ev.phase === "lock" ? "Predictions locked" : "Prediction started"}: ${ev.title}`;
-      break;
-    case "poll":
-      text = ev.phase === "end"
-        ? `Poll ended: ${ev.title}`
-        : `${ev.phase === "lock" ? "Poll locked" : "Poll started"}: ${ev.title}`;
-      break;
-    case "follow":
-      text = `${ev.display_name} just followed!`;
-      break;
-  }
-
   let eventName = null;
   if (ev.kind === "redeem" && ev.reward_id) {
     eventName = eventNames["reward:" + ev.reward_id] || eventNames[ev.kind];
@@ -566,30 +663,20 @@ function showEvent(ev) {
   if (eventName) {
     banner.append(el("span", "event-name", eventName));
   }
+  // Sub messages keep their text as a tooltip (title), as before.
+  if (ev.kind === "sub" && ev.message) banner.title = ev.message;
 
   const body = el("div", "event-body");
-  // Twitch reward icon — the server coalesces the channel coin for
-  // default-icon rewards. The SVG coin is the last-resort fallback.
-  if (ev.reward_image) {
-    const icon = document.createElement("img");
-    icon.className = "event-icon event-icon-img";
-    icon.src = ev.reward_image;
-    icon.alt = "";
-    body.append(icon);
-  } else if (ev.kind === "redeem") {
-    const icon = document.createElement("span");
-    icon.className = "event-icon";
-    // Channel-points coin: gold circle with the Twitch glitch.
-    icon.innerHTML =
-      '<svg viewBox="0 0 16 16" width="1.4em" height="1.4em" style="vertical-align:middle">' +
-      '<circle cx="8" cy="8" r="7.2" fill="#FABE2E" stroke="#9147FF" stroke-width="1.6"/>' +
-      '<path d="M11.4 5.2c-.5-.5-1.4-.9-3.4-.9-1.4 0-2.6.4-3.4.9L3.2 8l1.4 2.8c.8.5 2 .9 3.4.9s2.6-.4 3.4-.9L12.8 8l-1.4-2.8z" fill="#9147FF"/>' +
-      "</svg>";
-    body.append(icon);
+  const tpl = eventLayout[ev.kind];
+  if (typeof tpl === "string" && tpl.trim() !== "") {
+    // Config-driven structure: tokens substituted in order (icons and text
+    // interleave). See theme.event_layout in the config.
+    body.append(renderTemplate(tpl, ev));
   } else {
-    body.append(el("span", "event-icon", style.icon));
+    // Built-in fallback: one leading icon + one text run.
+    body.append(defaultEventIcon(ev, style));
+    body.append(el("span", "event-text", eventText(ev)));
   }
-  body.append(el("span", "event-text", text));
   banner.append(body);
 
   // In-flow: banners appear WHERE they happened (chronological bottom of

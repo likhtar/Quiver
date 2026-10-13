@@ -18,8 +18,8 @@ pub use auth::{ChannelToken, DEFAULT_SCOPES, StoredTokens};
 pub use dedupe::RedeemDeduper;
 pub use error::TwitchError;
 pub use events::{
-    Badge, ChatMessage, EmoteRef, Event, GifRef, GiftSubEvent, MessageDeleted, MysteryGiftEvent,
-    RaidEvent, RedeemEvent, ReplyParent, SubEvent,
+    Badge, ChatMessage, CheerEvent, EmoteRef, Event, GifRef, GiftSubEvent, MessageDeleted,
+    MysteryGiftEvent, RaidEvent, RedeemEvent, ReplyParent, SubEvent,
 };
 pub use helix::{HelixClient, HelixError, Redemption, RewardInfo};
 pub use source::IrcChatSource;

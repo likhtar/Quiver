@@ -25,6 +25,7 @@ pub enum MsgKind {
     MysteryGift,
     Raid,
     Redeem,
+    Cheer,
     HypeTrain,
     Prediction,
     Poll,
@@ -40,6 +41,7 @@ impl MsgKind {
             "mystery_gift" => Some(Self::MysteryGift),
             "raid" => Some(Self::Raid),
             "redeem" => Some(Self::Redeem),
+            "cheer" => Some(Self::Cheer),
             "hype_train" => Some(Self::HypeTrain),
             "prediction" => Some(Self::Prediction),
             "poll" => Some(Self::Poll),
@@ -57,6 +59,7 @@ impl MsgKind {
             Self::MysteryGift => "mystery_gift",
             Self::Raid => "raid",
             Self::Redeem => "redeem",
+            Self::Cheer => "cheer",
             Self::HypeTrain => "hype_train",
             Self::Prediction => "prediction",
             Self::Poll => "poll",
@@ -465,5 +468,20 @@ mod tests {
         c.content = Some(list(Mode::Denylist, &["nightbot", ""]));
         let err = CompiledFilters::compile(&c).expect_err("empty pattern must be refused");
         assert!(err.contains("empty pattern"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn cheer_kind_parses_and_filters() {
+        assert_eq!(MsgKind::parse("cheer"), Some(MsgKind::Cheer));
+        assert_eq!(MsgKind::Cheer.name(), "cheer");
+        assert_eq!(MsgKind::parse("bits"), None);
+
+        // message_type allowlist of just "cheer" drops a normal message but
+        // keeps a cheer.
+        let mut c = cfg();
+        c.message_type = Some(list(Mode::Allowlist, &["cheer"]));
+        let f = CompiledFilters::compile(&c).unwrap();
+        assert!(f.permits(&ctx(MsgKind::Cheer, "u", "U", "1", &[], "hi")));
+        assert!(!f.permits(&ctx(MsgKind::Message, "u", "U", "1", &[], "hi")));
     }
 }

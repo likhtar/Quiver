@@ -342,8 +342,9 @@ let css_cache_dir = cfg
                                 miss_for_poll.notify_one();
                             }
                             // Default-icon rewards: channel coin fallback.
+                            let points = coin_for_poll.read().ok().and_then(|c| c.clone());
                             if image.is_none() {
-                                image = coin_for_poll.read().ok().and_then(|c| c.clone());
+                                image = points.clone();
                             }
                             if !crate::filters::CompiledFilters::permits_event(
                                 &filters_for_poll,
@@ -363,6 +364,7 @@ let css_cache_dir = cfg
                                     "display_name": r.user_display_name,
                                     "reward_title": title,
                                     "reward_image": image,
+                                    "points_image": points,
                                     "reward_color": color,
                                     "reward_id": r.reward_id,
                                     "user_input": r.user_input,
@@ -834,6 +836,7 @@ pub(crate) fn meta_value(
         },
         "custom_badges": custom_badges,
         "event_names": live.theme.event_names,
+        "event_layout": live.theme.event_layout,
     })
 }
 
@@ -1337,6 +1340,7 @@ mod tests {
                 overflow_mode: crate::config::OverflowMode::Prune,
                 event_banner_secs: 8,
                 event_names: None,
+                event_layout: crate::config::EventLayout::default(),
             },
             emotes: EmotesConfig::default(),
         }

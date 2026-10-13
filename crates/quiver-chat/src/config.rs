@@ -166,6 +166,54 @@ pub enum OverflowMode {
     Scroll,
 }
 
+/// Per-kind event banner templates. Each string is a `{token}` template
+/// the widget renders: known tokens become text or an icon element, literal
+/// characters stay as text. Text is inserted as PLAIN TEXT (never HTML), so
+/// user-controlled values cannot inject markup. Unknown, empty or
+/// unbalanced `{...}` tokens are hard config errors. An empty template
+/// string falls back to the built-in default for that kind.
+///
+/// Tokens are substituted in the order they appear, so icons and text
+/// interleave freely (e.g. "{points_icon} {user} then {reward_icon} {reward}").
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct EventLayout {
+    /// Redeem banner template.
+    ///
+    /// Tokens: {points_icon} channel-points icon, {reward_icon} reward icon,
+    /// {reward} reward name, {user} sender display name, {input} raw user
+    /// input, {input_clause} ": <input>" when input is non-empty (else "").
+    ///
+    /// Example: "{points_icon} {user} redeemed {reward_icon} {reward}{input_clause}"
+    #[serde(default = "default_redeem_layout")]
+    pub redeem: String,
+    /// Cheer / bits banner template.
+    ///
+    /// Tokens: {bits_icon} bits badge icon, {bits} amount, {user} sender
+    /// display name, {message} raw cheer text, {message_clause}
+    /// ": <message>" when non-empty (else "").
+    ///
+    /// Example: "{bits_icon} {user} cheered {bits} bits{message_clause}"
+    #[serde(default = "default_cheer_layout")]
+    pub cheer: String,
+}
+
+impl Default for EventLayout {
+    fn default() -> Self {
+        Self {
+            redeem: default_redeem_layout(),
+            cheer: default_cheer_layout(),
+        }
+    }
+}
+
+fn default_redeem_layout() -> String {
+    "{reward_icon} {user} redeemed {reward}{input_clause}".to_string()
+}
+
+fn default_cheer_layout() -> String {
+    "{bits_icon} {user} cheered {bits} bits{message_clause}".to_string()
+}
+
 /// Visual appearance of rendered messages.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ThemeConfig {
@@ -201,10 +249,80 @@ pub struct ThemeConfig {
     #[serde(default)]
     #[schemars(skip)]
     pub event_names: Option<HashMap<String, String>>,
+    /// Per-kind event banner templates. Tokens are substituted by the
+    /// widget; text is inserted as plain text, icons become elements.
+    /// Unknown tokens are hard config errors. Absent = built-in defaults.
+    #[serde(default)]
+    pub event_layout: EventLayout,
 }
 
 fn default_event_banner_secs() -> u64 {
     8
+}
+
+/// Tokens allowed in the redeem banner template (`theme.event_layout.redeem`).
+const REDEEM_LAYOUT_TOKENS: &[&str] = &[
+    "points_icon",
+    "reward_icon",
+    "reward",
+    "user",
+    "input",
+    "input_clause",
+];
+/// Tokens allowed in the cheer banner template (`theme.event_layout.cheer`).
+const CHEER_LAYOUT_TOKENS: &[&str] = &["bits_icon", "bits", "user", "message", "message_clause"];
+
+/// Scan a `{token}` template and reject unknown/empty/unbalanced tokens.
+/// Hard errors: a typo would silently render literal braces on stream.
+fn validate_event_template(
+    path: &str,
+    template: &str,
+    allowed: &[&str],
+    out: &mut Vec<ValidationIssue>,
+) {
+    let bytes = template.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'{' => match template[i + 1..].find('}') {
+                Some(rel_end) => {
+                    let end = i + 1 + rel_end;
+                    let name = &template[i + 1..end];
+                    if name.is_empty() || name.contains('{') {
+                        out.push(ValidationIssue {
+                            path: path.to_string(),
+                            message: format!("malformed token {{{name}}}"),
+                        });
+                    } else if !allowed.contains(&name) {
+                        out.push(ValidationIssue {
+                            path: path.to_string(),
+                            message: format!(
+                                "unknown token {{{name}}} \u{2014} allowed here: {}",
+                                allowed.join(", ")
+                            ),
+                        });
+                    }
+                    i = end + 1;
+                }
+                None => {
+                    out.push(ValidationIssue {
+                        path: path.to_string(),
+                        message: "unclosed `{` in template".to_string(),
+                    });
+                    return;
+                }
+            },
+            b'}' => {
+                out.push(ValidationIssue {
+                    path: path.to_string(),
+                    message: "unmatched `}` in template (literal braces are not allowed)"
+                        .to_string(),
+                });
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
 }
 
 /// Lint user CSS through a real parser (lightningcss).
@@ -250,6 +368,7 @@ impl Default for ThemeConfig {
             overflow_mode: OverflowMode::Prune,
             event_banner_secs: default_event_banner_secs(),
             event_names: None,
+            event_layout: EventLayout::default(),
         }
     }
 }
@@ -288,7 +407,7 @@ pub struct FiltersConfig {
     /// Use patterns like `^!` to filter chat commands.
     pub content: Option<ListFilter>,
     /// Message kind names: message | sub | gift_sub | mystery_gift |
-    /// raid. Unknown names are config errors.
+    /// raid | redeem | cheer. Unknown names are config errors.
     pub message_type: Option<ListFilter>,
     /// Badge ids carried by the sender — same vocabulary as role_css
     /// (moderator, vip, subscriber, ...). Events carry no badges in v1.
@@ -436,6 +555,18 @@ impl Validate for ChatConfig {
             "must be at most 3600 (0 = banners stay until scrolled away)",
             &mut out,
         );
+        validate_event_template(
+            "theme.event_layout.redeem",
+            &self.theme.event_layout.redeem,
+            REDEEM_LAYOUT_TOKENS,
+            &mut out,
+        );
+        validate_event_template(
+            "theme.event_layout.cheer",
+            &self.theme.event_layout.cheer,
+            CHEER_LAYOUT_TOKENS,
+            &mut out,
+        );
 
         // Filters: regex patterns must compile; kind names must be real.
         // A broken filter is functional, not cosmetic — these are hard
@@ -477,7 +608,7 @@ impl Validate for ChatConfig {
                         path: "filters.message_type.items".to_string(),
                         message: format!(
                             "unknown message kind {item:?} \u{2014} expected one of: \
-                             message, sub, gift_sub, mystery_gift, raid, redeem,
+                             message, sub, gift_sub, mystery_gift, raid, redeem, cheer,
                              hype_train, prediction, poll, follow"
                         ),
                     });
