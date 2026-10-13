@@ -125,6 +125,9 @@ pub fn planned_actions(old: &LiveConfig, new: &LiveConfig) -> Vec<Action> {
     if old.theme.event_names != new.theme.event_names {
         broadcast_meta = true;
     }
+    if old.theme.event_layout != new.theme.event_layout {
+        broadcast_meta = true;
+    }
     if broadcast_meta {
         out.push(Action::BroadcastMeta);
     }
@@ -163,6 +166,7 @@ mod tests {
                 overflow_mode: crate::config::OverflowMode::Prune,
                 event_banner_secs: 8,
                 event_names: None,
+                event_layout: crate::config::EventLayout::default(),
             },
             emotes: EmotesConfig::default(),
             filters: crate::config::FiltersConfig::default(),
@@ -250,6 +254,14 @@ mod tests {
     fn lifetime_change_broadcasts_only() {
         let a = live("a:1", None, "chan", Some("id"), 18, 30, 60);
         let b = live("a:1", None, "chan", Some("id"), 18, 30, 10);
+        assert_eq!(planned_actions(&a, &b), vec![Action::BroadcastMeta]);
+    }
+
+    #[test]
+    fn event_layout_change_broadcasts_only() {
+        let a = live("a:1", None, "chan", Some("id"), 18, 30, 60);
+        let mut b = live("a:1", None, "chan", Some("id"), 18, 30, 60);
+        b.theme.event_layout.redeem = "{user} -> {reward}".to_string();
         assert_eq!(planned_actions(&a, &b), vec![Action::BroadcastMeta]);
     }
 
