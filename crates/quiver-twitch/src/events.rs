@@ -124,6 +124,19 @@ pub struct RedeemEvent {
     pub user_input: String,
 }
 
+/// A cheer (bits) message. From IRC PRIVMSG carrying the `bits` tag.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CheerEvent {
+    pub channel_login: String,
+    pub user_id: String,
+    pub user_login: String,
+    pub display_name: String,
+    /// Bits cheered.
+    pub bits: u64,
+    /// The cheer message text (may be empty).
+    pub text: String,
+}
+
 /// An incoming raid. From USERNOTICE `raid`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RaidEvent {
@@ -155,6 +168,8 @@ pub enum Event {
     Raid(RaidEvent),
     /// A channel point reward redemption (PRIVMSG with custom-reward-id).
     Redeem(RedeemEvent),
+    /// A cheer (bits) message (PRIVMSG with bits tag).
+    Cheer(CheerEvent),
     /// A message was deleted by a moderator/streamer (IRC CLEARMSG).
     MessageDeleted(MessageDeleted),
     /// The whole chat was cleared (IRC CLEARCHAT, ChatCleared action).

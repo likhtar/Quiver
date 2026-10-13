@@ -460,3 +460,133 @@ fn role_css_keeps_config_order_through_serde_json() {
     let wire: Vec<&str> = obj.keys().map(String::as_str).collect();
     assert_eq!(wire, ["subscriber", "founder", "broadcaster"]);
 }
+
+// ---- theme.event_layout ---------------------------------------------------
+
+/// Ground truth by hand: absent block → built-in defaults; a block that
+/// sets only ONE kind defaults the OTHER kind field-by-field (serde
+/// `default = "fn"`), so partial configs stay usable.
+#[test]
+fn event_layout_defaults_and_partial_override() {
+    // Absent entirely.
+    let base = r##"
+(
+    server: ( listen: "127.0.0.1:1", ),
+    twitch: ( channel: "chan" ),
+    theme: ( font_size_px: 18, max_messages: 30, message_lifetime_secs: 60 ),
+)
+"##;
+    let cfg: ChatConfig = parse_str(base).expect("absent event_layout must parse");
+    assert_eq!(
+        cfg.theme.event_layout.redeem,
+        "{reward_icon} {user} redeemed {reward}{input_clause}"
+    );
+    assert_eq!(
+        cfg.theme.event_layout.cheer,
+        "{bits_icon} {user} cheered {bits} bits{message_clause}"
+    );
+    assert_eq!(cfg.validate(), Vec::new());
+
+    // Only `cheer` given → `redeem` keeps its default.
+    let partial = r##"
+(
+    server: ( listen: "127.0.0.1:1", ),
+    twitch: ( channel: "chan" ),
+    theme: (
+        font_size_px: 18,
+        max_messages: 30,
+        message_lifetime_secs: 60,
+        event_layout: ( cheer: "{user} +{bits}" ),
+    ),
+)
+"##;
+    let cfg: ChatConfig = parse_str(partial).expect("partial event_layout must parse");
+    assert_eq!(cfg.theme.event_layout.cheer, "{user} +{bits}");
+    assert_eq!(
+        cfg.theme.event_layout.redeem,
+        "{reward_icon} {user} redeemed {reward}{input_clause}"
+    );
+    assert_eq!(cfg.validate(), Vec::new());
+}
+
+/// #unknown tokens are HARD validation errors with exact field paths — a
+/// typo must not silently render literal braces on stream.
+#[test]
+fn event_layout_unknown_and_unbalanced_tokens_are_rejected() {
+    let raw = r##"
+(
+    server: ( listen: "127.0.0.1:1", ),
+    twitch: ( channel: "chan" ),
+    theme: (
+        font_size_px: 18,
+        max_messages: 30,
+        message_lifetime_secs: 60,
+        event_layout: (
+            redeem: "{user} redeemed {reward_typo}",
+            cheer: "{bits unclosed",
+        ),
+    ),
+)
+"##;
+    let cfg: ChatConfig = parse_str(raw).expect("must parse");
+    let issues = cfg.validate();
+    let mut paths: Vec<&str> = issues.iter().map(|i| i.path.as_str()).collect();
+    paths.sort_unstable();
+    assert_eq!(
+        paths,
+        vec!["theme.event_layout.cheer", "theme.event_layout.redeem"],
+        "got: {issues:?}"
+    );
+    assert!(
+        issues
+            .iter()
+            .any(|i| i.message.contains("unknown token {reward_typo}")),
+        "must name the unknown token: {issues:?}"
+    );
+    assert!(
+        issues.iter().any(|i| i.message.contains("unclosed")),
+        "must flag the unclosed brace: {issues:?}"
+    );
+
+    // A cross-kind token is also unknown (bits in the redeem template).
+    let cross = r##"
+(
+    server: ( listen: "127.0.0.1:1", ),
+    twitch: ( channel: "chan" ),
+    theme: (
+        font_size_px: 18,
+        max_messages: 30,
+        message_lifetime_secs: 60,
+        event_layout: ( redeem: "{bits_icon} {user}" ),
+    ),
+)
+"##;
+    let cfg: ChatConfig = parse_str(cross).expect("must parse");
+    let issues = cfg.validate();
+    assert!(
+        issues.iter().any(|i| i.path == "theme.event_layout.redeem"
+            && i.message.contains("unknown token {bits_icon}")),
+        "cross-kind token must be rejected: {issues:?}"
+    );
+}
+
+/// Discoverability: the generated sample shows both templates WITH the
+/// token list / example comments, and empty braces are valid (unlike
+/// unknown tokens) — `{user}` is not confused with a braced RON struct.
+#[test]
+fn sample_config_exposes_event_layout() {
+    let text = quiver_config::generate_default::<ChatConfig>("quiver-chat --sample-config")
+        .expect("generation succeeds");
+    assert!(text.contains("event_layout"), "missing event_layout");
+    assert!(
+        text.contains("reward_icon} {user} redeemed {reward}{input_clause}"),
+        "default redeem template missing from sample"
+    );
+    assert!(
+        text.contains("bits_icon} {user} cheered {bits} bits{message_clause}"),
+        "default cheer template missing from sample"
+    );
+    for needle in ["points_icon", "message_clause", "Example:"] {
+        assert!(text.contains(needle), "missing doc fragment: {needle}");
+    }
+}

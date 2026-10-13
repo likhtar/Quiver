@@ -27,6 +27,9 @@ Frames are newline-delimited JSON objects with a `type` field:
     "custom_css":  ".msg { … }",
     "role_css":    { "moderator": ".msg.role-moderator { … }" },
     "emote_flags": { "twitch": true, "unicode": true, "seventv": true, "bttv": true, "ffz": true },
+    "event_names":  { "reward:<id>": "Song Request", "sub": "Sub" },
+    "event_layout": { "redeem": "{points_icon} {user} redeemed {reward_icon} {reward}{input_clause}",
+                      "cheer":  "{bits_icon} {user} cheered {bits} bits{message_clause}" },
     "custom_badges": {
       "definitions": { "special": { "id": "special", "url": "/badge-cache/…", "priority": 10, "height": 24, "label": "Special" } },
       "per_role":    { "moderator": { "badges": ["special"], "hide_native": false } },
@@ -66,7 +69,12 @@ Internally-tagged:
 { "type": "event", "event": { "kind": "raid", "from_login": "r", "from_display_name": "R", "viewers": 42 } }
 ```
 
-Kinds: `sub`, `gift_sub`, `mystery_gift`, `raid` (see [Events](events.md)).
+Kinds: `sub`, `gift_sub`, `mystery_gift`, `raid`, `redeem`, `cheer`
+(see [Events](events.md)). `redeem` carries `reward_title`, `reward_image`,
+`points_image`, `reward_color`, `reward_id`, `user_input`; `cheer` carries
+`bits` and `message`. Banner structure is configurable via
+`theme.event_layout` (see [Events](events.md#event-templates)) — the widget
+renders the template tokens, keeping user text as plain text.
 
 ## HTTP endpoints
 
