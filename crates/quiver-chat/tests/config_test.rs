@@ -297,6 +297,10 @@ fn event_layout_defaults_and_partial_override() {
         cfg.theme.event_layout.cheer,
         "{bits_icon} {user} cheered {bits} bits{message_clause}"
     );
+    assert!(
+        cfg.theme.event_layout.event_name,
+        "event_name defaults to true"
+    );
     assert_eq!(cfg.validate(), Vec::new());
 
     // Only `cheer` given → `redeem` keeps its default.
@@ -318,6 +322,27 @@ fn event_layout_defaults_and_partial_override() {
         cfg.theme.event_layout.redeem,
         "{reward_icon} {user} redeemed {reward}{input_clause}"
     );
+    assert!(
+        cfg.theme.event_layout.event_name,
+        "omitted event_name keeps the true default"
+    );
+    assert_eq!(cfg.validate(), Vec::new());
+
+    // Explicit opt-out parses and validates.
+    let off = r##"
+(
+    server: ( listen: "127.0.0.1:1", ),
+    twitch: ( channel: "chan" ),
+    theme: (
+        font_size_px: 18,
+        max_messages: 30,
+        message_lifetime_secs: 60,
+        event_layout: ( event_name: false ),
+    ),
+)
+"##;
+    let cfg: ChatConfig = parse_str(off).expect("event_name: false must parse");
+    assert!(!cfg.theme.event_layout.event_name);
     assert_eq!(cfg.validate(), Vec::new());
 }
 
@@ -398,7 +423,12 @@ fn sample_config_exposes_event_layout() {
         text.contains("bits_icon} {user} cheered {bits} bits{message_clause}"),
         "default cheer template missing from sample"
     );
-    for needle in ["points_icon", "message_clause", "Example:"] {
+    for needle in [
+        "points_icon",
+        "message_clause",
+        "Example:",
+        "event_name: true",
+    ] {
         assert!(text.contains(needle), "missing doc fragment: {needle}");
     }
 }

@@ -524,7 +524,7 @@ pub async fn pump(
                         let _ = redeem_deduper
                             .lock()
                             .map(|mut d| d.mark_irc(&r.user_login, &r.user_id, &r.reward_id));
-                        let (reward_title, mut reward_image, reward_color) = reward_titles
+                        let (reward_title, reward_image, reward_color) = reward_titles
                             .read()
                             .ok()
                             .and_then(|m| m.get(&r.reward_id).cloned())
@@ -536,15 +536,14 @@ pub async fn pump(
                         if reward_title.is_none() {
                             reward_miss_notify.notify_one();
                         }
-                        // Default-icon rewards: fall back to the channel coin
-                        // (fetched anonymously via GQL by the serve layer).
+                        // Channel-points coin (fetched anonymously via GQL by
+                        // the serve layer). Kept separate from `reward_image`:
+                        // a reward without a custom icon has NO reward icon
+                        // (the coin belongs to `{points_icon}` only).
                         let points_image = coin_icon
                             .read()
                             .ok()
                             .and_then(|c| c.clone());
-                        if reward_image.is_none() {
-                            reward_image = points_image.clone();
-                        }
                         info!(
                             reward_cached = reward_titles
                                 .read()

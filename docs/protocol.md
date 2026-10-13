@@ -28,8 +28,9 @@ Frames are newline-delimited JSON objects with a `type` field:
     "role_css":    { "moderator": ".msg.role-moderator { … }" },
     "emote_flags": { "twitch": true, "unicode": true, "seventv": true, "bttv": true, "ffz": true },
     "event_names":  { "reward:<id>": "Song Request", "sub": "Sub" },
-    "event_layout": { "redeem": "{points_icon} {user} redeemed {reward_icon} {reward}{input_clause}",
-                      "cheer":  "{bits_icon} {user} cheered {bits} bits{message_clause}" },
+    "event_layout": { "redeem": "{reward_icon} {user} redeemed {points_icon} {reward}{input_clause}",
+                      "cheer":  "{bits_icon} {user} cheered {bits} bits{message_clause}",
+                      "event_name": true },
     "custom_badges": {
       "definitions": { "special": { "id": "special", "url": "/badge-cache/…", "priority": 10, "height": 24, "label": "Special" } },
       "per_role":    { "moderator": { "badges": ["special"], "hide_native": false } },
