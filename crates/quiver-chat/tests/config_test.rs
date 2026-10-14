@@ -620,3 +620,167 @@ fn sample_config_exposes_event_layout() {
         assert!(text.contains(needle), "missing doc fragment: {needle}");
     }
 }
+
+// ---- twitch.credentials_file ---------------------------------------------
+
+use std::path::Path;
+
+fn base_config_with(creds_file: Option<&str>) -> String {
+    let creds = match creds_file {
+        Some(f) => format!(", credentials_file: Some(\"{f}\")"),
+        None => String::new(),
+    };
+    format!(
+        r##"(
+    server: ( listen: "127.0.0.1:1", ),
+    twitch: (
+        channel: "chan",
+        client_id: Some("inline_id"),
+        client_secret: Some("inline_secret"){creds},
+    ),
+    theme: ( font_size_px: 18, max_messages: 30, message_lifetime_secs: 60 ),
+)
+"##
+    )
+}
+
+/// The external credentials file overrides the inline pair, and the merged
+/// result validates clean. This is the portability contract: the styled
+/// config can ship with placeholder/inline creds while each user's own
+/// `credentials.ron` next to it wins.
+#[test]
+fn credentials_file_overrides_inline() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cfg_path = dir.path().join("chat.ron");
+    std::fs::write(&cfg_path, base_config_with(Some("credentials.ron"))).unwrap();
+    std::fs::write(
+        dir.path().join("credentials.ron"),
+        r#"( client_id: "file_id", client_secret: "file_secret" )"#,
+    )
+    .unwrap();
+
+    let cfg = quiver_chat::config::load(&cfg_path).expect("load must succeed");
+    assert_eq!(cfg.twitch.client_id.as_deref(), Some("file_id"));
+    assert_eq!(cfg.twitch.client_secret.as_deref(), Some("file_secret"));
+    assert_eq!(cfg.validate(), Vec::new());
+}
+
+/// A missing credentials file is NOT an error — credentials are optional and
+/// a template config may point at a file the user has not created yet. The
+/// inline values (if any) stay in force.
+#[test]
+fn missing_credentials_file_keeps_inline_and_is_not_fatal() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cfg_path = dir.path().join("chat.ron");
+    std::fs::write(&cfg_path, base_config_with(Some("credentials.ron"))).unwrap();
+
+    let cfg = quiver_chat::config::load(&cfg_path).expect("missing sidecar must not fail load");
+    assert_eq!(cfg.twitch.client_id.as_deref(), Some("inline_id"));
+    assert_eq!(cfg.twitch.client_secret.as_deref(), Some("inline_secret"));
+    assert_eq!(cfg.validate(), Vec::new());
+}
+
+/// An existing but malformed credentials file is a HARD error — a typo in
+/// secrets must never be silently ignored (that would render a running
+/// widget without badges with no clue why).
+#[test]
+fn malformed_credentials_file_is_fatal() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cfg_path = dir.path().join("chat.ron");
+    std::fs::write(&cfg_path, base_config_with(Some("credentials.ron"))).unwrap();
+    // Unknown key: deny_unknown_fields must reject it.
+    std::fs::write(
+        dir.path().join("credentials.ron"),
+        r#"( client_id: "x", client_secret: "y", oops: "z" )"#,
+    )
+    .unwrap();
+
+    let err = quiver_chat::config::load(&cfg_path).expect_err("bad creds file must fail");
+    assert!(
+        err.to_string().contains("credentials.ron"),
+        "error must name the file: {err}"
+    );
+}
+
+/// A placeholder (`client_id: ""`) reads as unset, so shipping an empty
+/// `credentials.ron.example`-style file does not trip the pair validation.
+#[test]
+fn blank_credentials_values_count_as_unset() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cfg_path = dir.path().join("chat.ron");
+    std::fs::write(&cfg_path, base_config_with(Some("credentials.ron"))).unwrap();
+    std::fs::write(
+        dir.path().join("credentials.ron"),
+        r#"( client_id: "  ", client_secret: "" )"#,
+    )
+    .unwrap();
+
+    let cfg = quiver_chat::config::load(&cfg_path).expect("load must succeed");
+    // Blank file values must NOT clobber the inline pair with empties.
+    assert_eq!(cfg.twitch.client_id.as_deref(), Some("inline_id"));
+    assert_eq!(cfg.twitch.client_secret.as_deref(), Some("inline_secret"));
+}
+
+/// The reload watcher must observe the config, the separate credentials file
+/// and a `file://` custom CSS source; inline / http(s) CSS has no local path.
+#[test]
+fn watch_targets_cover_config_credentials_and_file_css() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let css_path = dir.path().join("theme.css");
+    std::fs::write(&css_path, ".msg{}").unwrap();
+    let cfg_path = dir.path().join("chat.ron");
+
+    let raw = format!(
+        r##"(
+    server: ( listen: "127.0.0.1:1", ),
+    twitch: ( channel: "chan", credentials_file: Some("credentials.ron") ),
+    theme: (
+        font_size_px: 18,
+        max_messages: 30,
+        message_lifetime_secs: 60,
+        custom_css: Some(( uri: "file://{}" )),
+    ),
+)
+"##,
+        css_path.display()
+    );
+    let cfg: ChatConfig = parse_str(&raw).expect("must parse");
+
+    let targets = quiver_chat::config::watch_targets(&cfg, &cfg_path);
+    assert!(targets.contains(&cfg_path));
+    assert!(targets.contains(&dir.path().join("credentials.ron")));
+    let canon_css = std::fs::canonicalize(&css_path).unwrap();
+    assert!(targets.contains(&canon_css), "got {targets:?}");
+
+    // Inline CSS → only the config file is watched.
+    let inline: ChatConfig = parse_str(
+        r##"(
+    server: ( listen: "127.0.0.1:1", ),
+    twitch: ( channel: "chan" ),
+    theme: (
+        font_size_px: 18,
+        max_messages: 30,
+        message_lifetime_secs: 60,
+        custom_css: Some(".msg{}"),
+    ),
+)
+"##,
+    )
+    .expect("must parse");
+    assert_eq!(
+        quiver_chat::config::watch_targets(&inline, Path::new("chat.ron")),
+        vec![std::path::PathBuf::from("chat.ron")]
+    );
+}
+
+/// Discoverability: `--sample-config` must surface the new field so users
+/// learn the sidecar exists.
+#[test]
+fn sample_config_exposes_credentials_file() {
+    let text = quiver_config::generate_default::<ChatConfig>("quiver-chat --sample-config")
+        .expect("generation succeeds");
+    assert!(
+        text.contains("credentials_file"),
+        "sample must document twitch.credentials_file"
+    );
+}

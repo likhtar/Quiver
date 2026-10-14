@@ -43,7 +43,9 @@ listens on the address in `server.listen` (default `127.0.0.1:4783`).
 ## Minimal config
 
 The generated sample is already runnable — change the channel, add Twitch
-credentials if you want badges/emotes beyond first-party, and reload:
+credentials if you want badges/emotes beyond first-party (keep them in a
+separate, git-ignored `credentials.ron` — see
+[Badges → Twitch credentials](badges.md#twitch-credentials)), and reload:
 
 ```ron
 (

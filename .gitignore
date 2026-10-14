@@ -5,3 +5,4 @@ dist/
 .env
 *.log
 *.local.ron
+credentials.ron

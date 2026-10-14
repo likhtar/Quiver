@@ -24,6 +24,28 @@ image URLs (and channel emotes — see [Emotes](emotes.md)). Keep secrets in
 files matching `*.local.ron` — git-ignored by default. Without credentials,
 Twitch badges and channel-specific emotes are not resolved.
 
+For a config that is **shared or shipped as a template**, keep the secrets
+out of it entirely and point `twitch` at a separate file:
+
+```ron
+twitch: (
+    channel: "your_channel_here",
+    credentials_file: Some("credentials.ron"),
+)
+```
+
+```ron
+# credentials.ron — same directory as chat.ron (also git-ignored)
+( client_id: "your_client_id", client_secret: "your_client_secret" )
+```
+
+A relative `credentials_file` resolves against the directory of the config
+that names it. Values there **override** any inline `client_id`/`client_secret`
+(so you can ship placeholders and let each user drop in their own file).
+Empty/whitespace values count as unset. A missing file only warns (Quiver runs
+without API credentials); a malformed one is a hard error. The file is watched
+for [hot reload](configuration.md#hot-reload) like the config itself.
+
 ## Custom badges
 
 Define images, then attach them:
