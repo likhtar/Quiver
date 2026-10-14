@@ -78,6 +78,9 @@ While running, the config file is watched. Save any change and it reloads
 - the channel can even **swap live** if you change `twitch.channel`
 - `server.listen` changes rebind the server (the OBS source URL must be
   updated separately, but no restart needed)
+- the watcher also follows **sidecars**: the separate credentials file
+  (`twitch.credentials_file`) and any `file://` custom CSS. Edit one of those
+  and it reloads live — no need to re-save `chat.ron`
 - `SIGHUP` (`kill -HUP <pid>`) forces a reload manually
 
 Rejected edits (see [validation](#validating)) leave the running config

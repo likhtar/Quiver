@@ -5,10 +5,10 @@
 //! Schema exported via `quiver-chat --print-schema`.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use indexmap::IndexMap;
-use quiver_config::{Validate, ValidationIssue, require};
+use quiver_config::{ConfigError, Validate, ValidationIssue, require};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -90,6 +90,7 @@ impl Default for TwitchConfig {
             channel: "your_channel_here".to_string(),
             client_id: None,
             client_secret: None,
+            credentials_file: None,
         }
     }
 }
@@ -114,6 +115,137 @@ pub struct TwitchConfig {
     /// Twitch API client secret. Keep ONLY in git-ignored local configs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_secret: Option<String>,
+    /// Optional path to a SEPARATE credentials file (RON) holding
+    /// `client_id` / `client_secret`. Relative paths resolve against the
+    /// directory of the config file that references them. Values in this
+    /// file override the inline ones above, so a shared/styled config can
+    /// ship without secrets while each user keeps their own small
+    /// `credentials.ron` next to it (git-ignored, never shared).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credentials_file: Option<PathBuf>,
+}
+
+/// Shape of the standalone credentials file referenced by
+/// `twitch.credentials_file`. Fields are plain strings with `#[serde(default)]`
+/// so the file reads like a simple key/value pair — a bare `client_id: "…"`,
+/// with no `Some(...)` ceremony and no need to set both halves:
+///
+/// ```ron
+/// ( client_id: "abc", client_secret: "xyz" )
+/// ```
+///
+/// Empty/whitespace values count as unset. `deny_unknown_fields` turns a typo
+/// (e.g. `client_secret_key`) into a hard error instead of a silently ignored
+/// line — friendly for non-technical editors.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct CredentialsFile {
+    #[serde(default)]
+    pub client_id: String,
+    #[serde(default)]
+    pub client_secret: String,
+}
+
+/// Load a `ChatConfig` from `path`, then fold in the external credentials
+/// file if `twitch.credentials_file` is set. This is the entry point tools
+/// should use — plain [`quiver_config::load_from_path`] does NOT merge the
+/// sidecar, so credentials set only there would appear missing.
+pub fn load(path: &Path) -> Result<ChatConfig, ConfigError> {
+    let mut cfg: ChatConfig = quiver_config::load_from_path(path)?;
+    cfg.merge_credentials_file(path)?;
+    Ok(cfg)
+}
+
+/// Everything the reload watcher should observe for this config: the config
+/// file itself, the optional separate credentials file, and a `file://`
+/// custom CSS source (if any). Inline / `http(s)://` CSS has no local path
+/// and is skipped.
+pub fn watch_targets(cfg: &ChatConfig, config_path: &Path) -> Vec<PathBuf> {
+    let mut targets = vec![config_path.to_path_buf()];
+    if let Some(creds) = cfg.twitch.credentials_path(config_path) {
+        targets.push(creds);
+    }
+    if let Some(rest) = cfg
+        .theme
+        .custom_css
+        .as_ref()
+        .and_then(CustomCssSource::uri)
+        .and_then(|uri| uri.strip_prefix("file://"))
+    {
+        // Mirror `fetch_css_bytes`: paths are resolved against the process
+        // CWD. Canonicalize when possible (the file exists) and fall back to
+        // the absolute-but-unresolved path otherwise.
+        let raw = Path::new(rest);
+        let abs = if raw.is_absolute() {
+            raw.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(raw)
+        };
+        targets.push(std::fs::canonicalize(&abs).unwrap_or(abs));
+    }
+    targets.sort();
+    targets.dedup();
+    targets
+}
+
+impl TwitchConfig {
+    /// Absolute path to the external credentials file, if configured.
+    /// Relative paths are taken relative to the referencing config file.
+    pub fn credentials_path(&self, config_path: &Path) -> Option<PathBuf> {
+        let p = self.credentials_file.as_ref()?;
+        Some(if p.is_absolute() {
+            p.clone()
+        } else {
+            config_path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(p)
+        })
+    }
+}
+
+impl ChatConfig {
+    /// Merge `twitch.credentials_file` (if set) over the inline credentials.
+    /// A missing file is a WARN, not an error: credentials are optional and
+    /// a template config may point at a file the user has not created yet.
+    /// An existing-but-unreadable/unparseable file IS an error — a typo in
+    /// secrets must never be silently ignored.
+    fn merge_credentials_file(&mut self, config_path: &Path) -> Result<(), ConfigError> {
+        let Some(path) = self.twitch.credentials_path(config_path) else {
+            return Ok(());
+        };
+        let raw = match std::fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+                tracing::warn!(
+                    file = %path.display(),
+                    "twitch.credentials_file not found — running without Twitch API credentials"
+                );
+                return Ok(());
+            }
+            Err(source) => return Err(ConfigError::Io { path, source }),
+        };
+        let creds: CredentialsFile = ron::from_str(&raw).map_err(|source| ConfigError::Parse {
+            path: path.clone(),
+            source: Box::new(source),
+        })?;
+        if let Some(id) = nonempty(creds.client_id) {
+            self.twitch.client_id = Some(id);
+        }
+        if let Some(secret) = nonempty(creds.client_secret) {
+            self.twitch.client_secret = Some(secret);
+        }
+        Ok(())
+    }
+}
+
+/// Trim and drop empty values so a placeholder (`client_id: ""`) reads as
+/// unset rather than as a credential.
+fn nonempty(value: String) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 /// Custom CSS source: inline text OR a URI to load.

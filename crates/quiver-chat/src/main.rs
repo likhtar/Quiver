@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use quiver_chat::config::ChatConfig;
-use quiver_config::{Validate, load_from_path, write_schema};
+use quiver_config::{Validate, write_schema};
 
 #[derive(Debug, Parser)]
 #[command(name = "quiver-chat", about = "OBS-Twitch chat widget engine")]
@@ -68,7 +68,7 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let cfg: ChatConfig = load_from_path(&args.config)?;
+    let cfg: ChatConfig = quiver_chat::config::load(&args.config)?;
 
     if args.auth {
         tokio::runtime::Builder::new_current_thread()
