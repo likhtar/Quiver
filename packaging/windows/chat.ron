@@ -20,15 +20,35 @@
         font_size_px: 27,
         max_messages: 30,
         message_lifetime_secs: 60,
-        // Стиль чату — у custom-widget.css поруч. Редагуй його, сервер
+        // Стиль чату — у папці css\. Редагуй css\custom-widget.css, сервер
         // підхопить зміни наживо (перезапуск не потрібен).
         //
-        // Є друга готова тема: likh_tar.css (поруч). Щоб увімкнути її,
-        // заміни рядок нижче на  uri: "file://likh_tar.css"  і додай блок
-        // role_css (див. ГАЙД.txt, розділ «Стиль»).
-        custom_css: Some(( uri: "file://custom-widget.css" )),
+        // Є друга готова тема: css\likh_tar.css. Щоб увімкнути її, заміни
+        // рядок нижче на  uri: "file://css/likh_tar.css"  і додай блок
+        // role_css (див. ГАЙД.txt, розділ 6 «Стиль»).
+        custom_css: Some(( uri: "file://css/custom-widget.css" )),
         role_css: None,
         overflow_mode: prune,
+
+        // Вигляд банерів подій: нагороди за бали (redeem) і бітси (cheer).
+        // Токени у {} підставляються; невідомий токен = помилка конфіга
+        // (релоад відхилять). Absent = цей самий вбудований дефолт.
+        //   redeem: {reward_icon} іконка нагороди, {points_icon} іконка балів
+        //           каналу, {reward} назва, {user} хто,
+        //           {input} текст вводу, {input_clause} = ": <input>"/"".
+        //   cheer:  {bits_icon} бейдж бітсів, {bits} сума, {user} хто,
+        //           {message} текст, {message_clause} = ": <msg>"/"".
+        // event_name: показувати пігулку назви події для redeem/cheer.
+        //
+        // Щоб змінити мову/порядок — ЗАМІНИ рядок, не додавай другий
+        // однойменний ключ (RON впаде на дублікаті). Напр. українською:
+        //   redeem: "{user} {points_icon}рідімить {reward_icon} {reward}{input_clause}",
+        //   cheer:  "{bits_icon} {user} заряджає {bits} бітсів{message_clause}",
+        event_layout: (
+            redeem: "{reward_icon} {user} redeemed {reward}{input_clause}",
+            cheer: "{bits_icon} {user} cheered {bits} bits{message_clause}",
+            event_name: true,
+        ),
     ),
     emotes: (
         twitch: true,

@@ -3,8 +3,8 @@
    ------------------------------------------------------------
    Це «друга тема» поруч із custom-widget.css. Сама вона НЕ
    вмикається: щоб застосувати, у chat.ron заміни рядок custom_css
-   на  custom_css: Some(( uri: "file://likh_tar.css" )),
-   і додай блок role_css (див. ГАЙД.txt, розділ «Стиль»).
+   на  custom_css: Some(( uri: "file://css/likh_tar.css" )),
+   і додай блок role_css (див. ГАЙД.txt, розділ 6 «Стиль»).
 
    Чому потрібен role_css: ця тема малює рамку/шапку кольором зі
    змінної --message-border-color, яку виставляє саме role_css для
