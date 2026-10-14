@@ -18,7 +18,7 @@ use tokio::sync::{Notify, broadcast};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tracing::info;
 
-use crate::helix::HelixClient;
+use crate::helix::{HelixClient, RewardInfo};
 
 const EVENTSUB_WS_URL: &str = "wss://eventsub.wss.twitch.tv/ws";
 
@@ -79,6 +79,7 @@ pub fn spawn(
     tx: broadcast::Sender<String>,
     quit: tokio_util::sync::CancellationToken,
     gate: Arc<dyn Fn(&str) -> bool + Send + Sync>,
+    reward_lookup: Arc<dyn Fn(&str) -> Option<RewardInfo> + Send + Sync>,
     deduper: crate::dedupe::SharedRedeemDeduper,
     mut swap: tokio::sync::watch::Receiver<std::time::Instant>,
 ) {
@@ -116,6 +117,7 @@ pub fn spawn(
                 tx.clone(),
                 quit.clone(),
                 gate.clone(),
+                reward_lookup.clone(),
                 deduper.clone(),
                 coin,
                 swap.clone(),
@@ -166,6 +168,7 @@ async fn run_session(
     tx: broadcast::Sender<String>,
     quit: tokio_util::sync::CancellationToken,
     gate: Arc<dyn Fn(&str) -> bool + Send + Sync>,
+    reward_lookup: Arc<dyn Fn(&str) -> Option<RewardInfo> + Send + Sync>,
     deduper: crate::dedupe::SharedRedeemDeduper,
     coin_icon: Option<String>,
     mut swap: tokio::sync::watch::Receiver<std::time::Instant>,
@@ -280,7 +283,7 @@ async fn run_session(
                 match message_type {
                     "notification" => {
                         let sub_type = v["metadata"]["subscription_type"].as_str().unwrap_or("");
-                        if let Some(frame) = map_event(sub_type, &v["payload"]["event"], &coin_icon)
+                        if let Some(frame) = map_event(sub_type, &v["payload"]["event"], &coin_icon, &*reward_lookup)
                             && gate(frame["event"]["kind"].as_str().unwrap_or(""))
                         {
                             // Redeem frames dedupe cross-source (redemption
@@ -341,6 +344,7 @@ fn map_event(
     sub_type: &str,
     ev: &serde_json::Value,
     coin_icon: &Option<String>,
+    reward_lookup: &dyn Fn(&str) -> Option<RewardInfo>,
 ) -> Option<serde_json::Value> {
     let kind = match sub_type {
         "channel.channel_points_custom_reward_redemption.add" => "redeem",
@@ -356,26 +360,39 @@ fn map_event(
         _ => return None,
     };
 
-    // EventSub carries the reward title AND icon inline — no Helix lookup
-    // needed. The reward's OWN icon only (`reward.image.url_2x`); a
-    // default-icon reward (image null) has NO reward icon. The channel coin
-    // is a distinct thing and belongs to `{points_icon}` only — never to
-    // `{reward_icon}` (that was the old single-icon contract).
-    let reward_image = ev["reward"]["image"]["url_2x"].as_str().map(str::to_string);
+    // The EventSub redemption payload's `reward` object carries only
+    // id/title/cost/prompt — NO `image` and NO `background_color` (see the
+    // EventSub reference). The reward's own icon and colour therefore come
+    // from Helix `custom_rewards`, keyed by reward id — the same source the
+    // IRC and poller paths use. A default-icon reward has no icon (None) but
+    // still has a colour. The channel coin is a separate token
+    // (`{points_icon}`) and is NEVER a fallback for `{reward_icon}`.
+    let reward_id = ev["reward"]["id"].as_str().unwrap_or_default();
+    let info = if kind == "redeem" {
+        reward_lookup(reward_id)
+    } else {
+        None
+    };
+    let reward_title = info
+        .as_ref()
+        .map(|i| i.title.clone())
+        .or_else(|| ev["reward"]["title"].as_str().map(str::to_string));
+    let reward_image = info.as_ref().and_then(|i| i.image_url.clone());
+    let reward_color = info.as_ref().and_then(|i| i.background_color.clone());
     Some(serde_json::json!({
         "type": "event",
         "event": {
             "kind": kind,
             "user_login": ev["user_login"].as_str().unwrap_or_default(),
             "display_name": ev["user_name"].as_str().unwrap_or_default(),
-            "reward_title": ev["reward"]["title"].as_str(),
+            "reward_title": reward_title,
             "reward_image": reward_image,
             // Channel coin resolved via GQL at session start — `{points_icon}`.
             "points_image": coin_icon.clone(),
             // Twitch reward colour drives the banner background/border.
-            "reward_color": ev["reward"]["background_color"].as_str(),
+            "reward_color": reward_color,
             // Lets the widget map the reward's display name for the name pill.
-            "reward_id": ev["reward"]["id"].as_str().unwrap_or_default(),
+            "reward_id": reward_id,
             "user_input": ev["user_input"].as_str().unwrap_or_default(),
         }
     }))
@@ -434,6 +451,7 @@ fn poll(phase: &str, ev: &serde_json::Value) -> Option<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::map_event;
+    use crate::helix::RewardInfo;
     use serde_json::json;
 
     const REDEEM: &str = "channel.channel_points_custom_reward_redemption.add";
@@ -442,7 +460,9 @@ mod tests {
         Some("https://cdn/coin.png".to_string())
     }
 
-    fn redeem_payload(image: serde_json::Value) -> serde_json::Value {
+    /// Real EventSub redemption payload: the `reward` object carries only
+    /// id/title/cost/prompt — no image, no background_color.
+    fn redeem_payload() -> serde_json::Value {
         json!({
             "id": "red-1",
             "user_login": "fan",
@@ -452,41 +472,71 @@ mod tests {
                 "id": "reward-1",
                 "title": "Song",
                 "cost": 100,
-                "image": image,
-                "background_color": "#842598",
+                "prompt": "why",
             }
         })
     }
 
-    // Regression: a default-icon reward (image null) must NOT inherit the
-    // channel coin as its reward icon — the coin is `{points_icon}` only.
+    fn no_rewards(_: &str) -> Option<RewardInfo> {
+        None
+    }
+
+    // Icon/colour come from Helix (reward id -> RewardInfo): a custom-icon
+    // reward's icon and colour are taken from the map, never the coin.
     #[test]
-    fn redeem_default_icon_has_no_reward_image_but_carries_coin() {
-        let frame = map_event(REDEEM, &redeem_payload(json!(null)), &coin()).unwrap();
+    fn redeem_uses_helix_icon_and_colour_never_the_coin() {
+        let lookup = |rid: &str| {
+            (rid == "reward-1").then(|| RewardInfo {
+                title: "Song".into(),
+                image_url: Some("https://cdn/reward-2x.png".into()),
+                background_color: Some("#842598".into()),
+            })
+        };
+        let frame = map_event(REDEEM, &redeem_payload(), &coin(), &lookup).unwrap();
         let e = &frame["event"];
         assert_eq!(e["kind"], "redeem");
+        assert_eq!(e["reward_image"], "https://cdn/reward-2x.png");
+        assert_eq!(e["reward_color"], "#842598");
+        assert_eq!(e["reward_title"], "Song");
+        assert_eq!(e["reward_id"], "reward-1");
+        assert_eq!(e["points_image"], "https://cdn/coin.png");
+    }
+
+    // Default-icon reward: Helix reports no image but a colour. The coin must
+    // NOT leak into `reward_image`.
+    #[test]
+    fn redeem_default_icon_has_no_reward_image_but_keeps_colour() {
+        let lookup = |_: &str| {
+            Some(RewardInfo {
+                title: "Song".into(),
+                image_url: None,
+                background_color: Some("#9146ff".into()),
+            })
+        };
+        let frame = map_event(REDEEM, &redeem_payload(), &coin(), &lookup).unwrap();
+        let e = &frame["event"];
         assert!(
             e["reward_image"].is_null(),
             "coin must not leak into reward_image"
         );
+        assert_eq!(e["reward_color"], "#9146ff");
         assert_eq!(e["points_image"], "https://cdn/coin.png");
-        assert_eq!(e["reward_color"], "#842598");
-        assert_eq!(e["reward_id"], "reward-1");
-        assert_eq!(e["reward_title"], "Song");
     }
 
+    // Unknown reward id (cache miss): fall back to the payload title, no
+    // icon, no colour — and the coin is still `{points_icon}` only.
     #[test]
-    fn redeem_custom_icon_uses_url_2x() {
-        let img = json!({ "url_1x": "https://cdn/1x.png", "url_2x": "https://cdn/2x.png" });
-        let frame = map_event(REDEEM, &redeem_payload(img), &coin()).unwrap();
+    fn redeem_unknown_reward_falls_back_to_payload_title() {
+        let frame = map_event(REDEEM, &redeem_payload(), &coin(), &no_rewards).unwrap();
         let e = &frame["event"];
-        assert_eq!(e["reward_image"], "https://cdn/2x.png");
-        assert_eq!(e["points_image"], "https://cdn/coin.png");
+        assert_eq!(e["reward_title"], "Song");
+        assert!(e["reward_image"].is_null());
+        assert!(e["reward_color"].is_null());
     }
 
     #[test]
     fn redeem_without_coin_still_maps() {
-        let frame = map_event(REDEEM, &redeem_payload(json!(null)), &None).unwrap();
+        let frame = map_event(REDEEM, &redeem_payload(), &None, &no_rewards).unwrap();
         assert!(frame["event"]["points_image"].is_null());
     }
 }
