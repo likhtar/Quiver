@@ -1,0 +1,415 @@
+/* ============================================================
+   likh_tar.css — ГОТОВА АЛЬТЕРНАТИВНА ТЕМА (стиль автора Quiver).
+   ------------------------------------------------------------
+   Це «друга тема» поруч із custom-widget.css. Сама вона НЕ
+   вмикається: щоб застосувати, у chat.ron заміни рядок custom_css
+   на  custom_css: Some(( uri: "file://likh_tar.css" )),
+   і додай блок role_css (див. ГАЙД.txt, розділ «Стиль»).
+
+   Чому потрібен role_css: ця тема малює рамку/шапку кольором зі
+   змінної --message-border-color, яку виставляє саме role_css для
+   кожної ролі. Без role_css усі бульки будуть одного кольору.
+   ============================================================ */
+
+/* ============================================================
+   Кастомний темно-прозорий стиль чату (Speech Bubble Tab)
+   v7: Фікс селектора super_moderator за конфігом quiver-chat
+   ============================================================ */
+
+:root {
+  --chat-font: "Fredoka", "Quicksand", "Comfortaa", sans-serif;
+  --message-font-size: 20px;
+  --message-font-weight: 800;
+  --message-line-height: 1.25;
+  --message-background: rgba(20, 20, 20, 0.82);
+  --message-border-color: #ffb6c1;
+  --username-font-size: 15px;
+  --username-font-weight: 800;
+  --badge-size: 18px;
+  --emote-size: 26px;
+  --message-gap: 20px;
+  --event-icon-size: 22px;
+}
+
+html,
+body {
+  font-family: var(--chat-font);
+  margin: 0;
+  padding: 0;
+}
+
+div#chat,
+#chat {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: flex-start !important;
+  gap: var(--message-gap) !important;
+  padding: 20px 4px 10px 4px !important;
+  width: 100% !important;
+  box-sizing: border-box !important;
+}
+
+/* ============================================================
+   Анімація сяйва зліва направо
+   ============================================================ */
+
+@keyframes shine-sweep {
+  0% {
+    transform: translateX(-150%) skewX(-20deg);
+  }
+  30%, 100% {
+    transform: translateX(250%) skewX(-20deg);
+  }
+}
+
+/* ============================================================
+   Динамічні кольори рамок за ролями
+
+   ПЕРЕМІЩЕНО 2026-10-01 → chat.ron `theme.role_css`.
+   Причина: класи `.msg.role-<id>` ставляться тільки якщо badge id
+   є ключем у role_css (main.js: `if (roleCss[b.id]) classList.add`).
+   Правила тримаємо в role_css, щоб був один источник правди:
+   role_css інжектиться перед custom_css і перебиває його.
+   ============================================================ */
+
+/* ============================================================
+   Основна булька повідомлення
+   ============================================================ */
+
+div.msg,
+.msg {
+  position: relative !important;
+  isolation: isolate !important;
+  display: block !important;
+  width: fit-content !important;
+  min-width: 60px !important;
+  max-width: 98% !important;
+  box-sizing: border-box !important;
+  margin: 0 !important;
+  padding: 10px 14px 8px 14px !important;
+  border: 1px solid var(--message-border-color) !important;
+  border-radius: 0 14px 14px 14px !important;
+  background: var(--message-background) !important;
+  box-shadow: 0 2px 0 var(--message-border-color) !important;
+  color: #ffffff !important;
+  font-family: var(--chat-font) !important;
+  font-size: var(--message-font-size) !important;
+  font-weight: var(--message-font-weight) !important;
+  line-height: var(--message-line-height) !important;
+  overflow-wrap: anywhere !important;
+  word-break: break-word !important;
+  unicode-bidi: plaintext !important;
+  contain: none !important;
+}
+
+div.msg::before,
+.msg::before {
+  display: none !important;
+  content: none !important;
+  background: none !important;
+}
+
+span.body {
+  display: block !important;
+  position: static !important;
+  background: transparent !important;
+  border: none !important;
+  padding: 0 !important;
+}
+
+/* ============================================================
+   Пуп'янок-шапка (Напівпрозорий колір обводки + кольори твіча)
+   ============================================================ */
+
+span.user {
+  position: absolute !important;
+  top: -13px !important;
+  left: -2px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  height: 26px !important;
+  background: color-mix(in srgb, var(--message-border-color) 35%, #141414) !important;
+  border: 1px solid var(--message-border-color) !important;
+  border-radius: 10px 10px 10px 8px !important;
+  padding: 1px 10px 1px 8px !important;
+  z-index: 6 !important;
+  font-size: var(--username-font-size) !important;
+  font-weight: 800 !important;
+  white-space: nowrap !important;
+  box-sizing: border-box !important;
+  overflow: hidden !important;
+}
+
+span.user,
+span.user * {
+  text-shadow: 0px 1px 3px rgba(0, 0, 0, 0.9) !important;
+}
+
+div.msg.role-subscriber span.user::after,
+div.msg.role-founder span.user::after,
+div.msg.role-vip span.user::after,
+div.msg.role-moderator span.user::after,
+div.msg.role-lead_moderator span.user::after,
+div.msg.role-global_mod span.user::after,
+div.msg.role-broadcaster span.user::after {
+  content: "" !important;
+  position: absolute !important;
+  top: 0 !important;
+  left: 0 !important;
+  width: 50% !important;
+  height: 100% !important;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.35) 50%,
+    rgba(255, 255, 255, 0) 100%
+  ) !important;
+  pointer-events: none !important;
+  z-index: 8 !important;
+  animation: shine-sweep 5s ease-in-out infinite !important;
+}
+
+span.user::before {
+  content: "" !important;
+  display: inline-block !important;
+  width: var(--badges-width, 0px) !important;
+  flex-shrink: 0 !important;
+}
+
+span.badges {
+  position: absolute !important;
+  top: -13px !important;
+  left: 6px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 4px !important;
+  height: 26px !important;
+  z-index: 10 !important;
+  pointer-events: none !important;
+  padding: 0 !important;
+  margin: 0 !important;
+}
+
+span.body:has(span.badges > img:nth-child(1)) span.user { --badges-width: calc(var(--badge-size) + 4px); }
+span.body:has(span.badges > img:nth-child(2)) span.user { --badges-width: calc((var(--badge-size) * 2) + 8px); }
+span.body:has(span.badges > img:nth-child(3)) span.user { --badges-width: calc((var(--badge-size) * 3) + 12px); }
+span.body:has(span.badges > img:nth-child(4)) span.user { --badges-width: calc((var(--badge-size) * 4) + 16px); }
+span.body:has(span.badges > img:nth-child(5)) span.user { --badges-width: calc((var(--badge-size) * 5) + 20px); }
+
+span.sep {
+  display: none !important;
+}
+
+span.text {
+  display: block !important;
+  width: 100% !important;
+  margin-top: 2px !important;
+  word-break: break-word !important;
+  overflow-wrap: anywhere !important;
+  color: #ffffff !important;
+  font-weight: var(--message-font-weight) !important;
+  text-shadow: 0px 1px 3px rgba(0, 0, 0, 0.9) !important;
+}
+
+img.badge,
+img.custom-badge,
+.badge {
+  height: var(--badge-size) !important;
+  max-width: calc(var(--badge-size) * 2.2) !important;
+  object-fit: contain !important;
+  vertical-align: middle !important;
+}
+
+img.emote,
+.emote {
+  height: var(--emote-size) !important;
+  max-width: calc(var(--emote-size) * 4) !important;
+  margin: -0.18em 0.06em -0.2em !important;
+  object-fit: contain !important;
+  vertical-align: middle !important;
+}
+
+/* ============================================================
+   БАНЕРИ ПОДІЙ
+   ============================================================ */
+
+div.event,
+div#chat > .event {
+  position: relative !important;
+  isolation: isolate !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  width: fit-content !important;
+  max-width: 98% !important;
+  box-sizing: border-box !important;
+  margin-top: 12px !important;
+  padding: 9px 14px !important;
+  border: 1px solid var(--event-border-color, #ffd700) !important;
+  border-radius: 14px !important;
+  background: var(--message-background) !important;
+  box-shadow: 0 2px 0 var(--event-border-color, #ffd700) !important;
+  color: #ffffff !important;
+  font-family: var(--chat-font) !important;
+  font-size: var(--message-font-size) !important;
+  font-weight: var(--message-font-weight) !important;
+  line-height: var(--message-line-height) !important;
+  overflow-wrap: anywhere !important;
+  word-break: break-word !important;
+  contain: none !important;
+}
+
+/* Селектор із `#chat` навмисне: базове правило `div#chat > .event` має
+   вищу специфічність, тож без нього тло нижче не застосовується. */
+div#chat > div.event.event-redeem,
+div.event.event-redeem,
+.event-redeem {
+  /* Fallback, якщо колір нагороди від Twitch невідомий (widget ставить
+     --event-border-color inline, коли колір є — тоді це перекривається). */
+  --event-border-color: #ffd700;
+  /* Тло = колір винагороди (--event-bg з inline від widget), змішаний
+     з темною булькою; без кольору — звичайна темна. */
+  background: color-mix(
+    in srgb,
+    var(--event-bg, transparent) 34%,
+    var(--message-background)
+  ) !important;
+}
+div.event.event-sub,
+div.event.event-gift_sub,
+div.event.event-mystery_gift,
+.event-sub,
+.event-gift_sub,
+.event-mystery_gift {
+  --event-border-color: #9146ff;
+}
+div.event.event-raid,
+.event-raid {
+  --event-border-color: #ff8c00;
+}
+div.event.event-hype_train,
+.event-hype_train {
+  --event-border-color: #ff006e;
+}
+div.event.event-prediction,
+.event-prediction {
+  --event-border-color: #0078ff;
+}
+div.event.event-poll,
+.event-poll {
+  --event-border-color: #00c878;
+}
+div.event.event-follow,
+.event-follow {
+  --event-border-color: #00ffb4;
+}
+
+div.event .event-icon,
+.event-icon {
+  font-size: var(--event-icon-size) !important;
+  line-height: 1 !important;
+  flex-shrink: 0 !important;
+  border: none !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  margin: 0 !important;
+}
+div.event .event-icon svg,
+.event-icon svg {
+  width: var(--event-icon-size) !important;
+  height: var(--event-icon-size) !important;
+}
+div.event .event-icon-img,
+.event-icon-img {
+  width: var(--event-icon-size) !important;
+  height: var(--event-icon-size) !important;
+  object-fit: contain !important;
+  flex-shrink: 0 !important;
+  border: none !important;
+  background: transparent !important;
+}
+
+div.event .event-text,
+.event-text {
+  color: #ffffff !important;
+  font-weight: var(--message-font-weight) !important;
+  text-shadow: 0px 1px 3px rgba(0, 0, 0, 0.9) !important;
+  border: none !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  margin: 0 !important;
+}
+
+/* event-name = той самий «пуп'янок-шапка», що й .user у повідомленні:
+   абсолютний таб над верхнім лівим кутом банера. Колір рамки/тла бере з
+   --event-border-color (inline колір нагороди Twitch або fallback за типом). */
+div.event .event-name,
+.event-name {
+  position: absolute !important;
+  top: -13px !important;
+  left: -2px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  width: auto !important;
+  height: 26px !important;
+  margin: 0 !important;
+  padding: 1px 10px 1px 8px !important;
+  background: color-mix(in srgb, var(--event-border-color, #ffd700) 35%, #141414) !important;
+  border: 1px solid var(--event-border-color, #ffd700) !important;
+  border-radius: 10px 10px 10px 8px !important;
+  box-shadow: none !important;
+  color: #ffffff !important;
+  font-size: var(--username-font-size) !important;
+  font-weight: 800 !important;
+  line-height: normal !important;
+  text-shadow: 0px 1px 3px rgba(0, 0, 0, 0.9) !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  box-sizing: border-box !important;
+  align-self: auto !important;
+  z-index: 6 !important;
+}
+
+/* Лиск, як у span.user::after (username) — на всіх подіях. */
+div.event .event-name::after,
+.event-name::after {
+  content: "" !important;
+  position: absolute !important;
+  top: 0 !important;
+  left: 0 !important;
+  width: 50% !important;
+  height: 100% !important;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.35) 50%,
+    rgba(255, 255, 255, 0) 100%
+  ) !important;
+  pointer-events: none !important;
+  z-index: 8 !important;
+  animation: shine-sweep 5s ease-in-out infinite !important;
+}
+
+div.event .event {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 4px !important;
+}
+
+
+/* Тіло банера = звичайний inline-потік (НЕ flex): токени шаблону
+   ({user}, {reward}, іконки) мусять переноситися як речення, а не
+   окремими flex-елементами-колонками. Пробіли в шаблоні дають відступи;
+   іконки inline + vertical-align: middle (див. нижче). */
+div.event .event-body {
+  display: block !important;
+  min-width: 0 !important;
+  white-space: normal !important;
+  word-break: break-word !important;
+  overflow-wrap: anywhere !important;
+}
+

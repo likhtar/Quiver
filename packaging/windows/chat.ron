@@ -22,6 +22,10 @@
         message_lifetime_secs: 60,
         // Стиль чату — у custom-widget.css поруч. Редагуй його, сервер
         // підхопить зміни наживо (перезапуск не потрібен).
+        //
+        // Є друга готова тема: likh_tar.css (поруч). Щоб увімкнути її,
+        // заміни рядок нижче на  uri: "file://likh_tar.css"  і додай блок
+        // role_css (див. ГАЙД.txt, розділ «Стиль»).
         custom_css: Some(( uri: "file://custom-widget.css" )),
         role_css: None,
         overflow_mode: prune,
