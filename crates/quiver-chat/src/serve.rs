@@ -443,6 +443,24 @@ let css_cache_dir = cfg
                 "",
             )
         });
+        // Reward icon + colour for EventSub redeems: the EventSub payload's
+        // reward object carries no image/background_color, so look them up in
+        // the shared Helix reward cache (the same map the poller reads). A
+        // miss (reward created mid-stream) pokes the refresher so the next
+        // redeem renders whole.
+        let reward_titles_for_es = reward_titles.clone();
+        let miss_for_es = miss_gen.clone();
+        let reward_lookup: Arc<dyn Fn(&str) -> Option<quiver_twitch::RewardInfo> + Send + Sync> =
+            Arc::new(move |reward_id: &str| {
+                let info = reward_titles_for_es
+                    .read()
+                    .ok()
+                    .and_then(|m| m.get(reward_id).cloned());
+                if info.is_none() {
+                    miss_for_es.notify_one();
+                }
+                info
+            });
         tokio::spawn(async move {
             // EventSub re-targets on channel swap: per session it resolves
             // the CURRENT channel (login via the resolver closure),
@@ -454,6 +472,7 @@ let css_cache_dir = cfg
                 tx_for_es,
                 quit,
                 gate,
+                reward_lookup,
                 deduper_for_es,
                 swap_for_es,
             );
