@@ -23,7 +23,10 @@ theme: (
 
 URI sources resolve like badges do (see [Badges](badges.md#caching)): `file://`
 read fresh from disk, `http(s)://` fetched and cached. An **active** source
-re-resolves on every config reload — edit the file, save the config, done.
+re-resolves on every config reload. A `file://` source is also **watched
+directly**: save the CSS file itself and the change applies live — no need to
+re-save `chat.ron`. (`http(s)://` sources have no local file to watch and
+still update on a config reload.)
 
 The CSS is linted with a real parser at load/reload; a syntax problem is a
 warning, never a blocker (browsers apply what they accept).

@@ -5,8 +5,7 @@
 //! config stays untouched. There is no half-applied state, ever.
 
 use notify::{EventKind, Watcher as _};
-use notify_debouncer_full::DebouncedEvent;
-use std::ffi::OsStr;
+use notify_debouncer_full::{DebounceEventResult, DebouncedEvent};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,23 +22,95 @@ use crate::serve::SharedBadges;
 
 const DEBOUNCE: Duration = Duration::from_millis(500);
 
-/// Does this debounced batch mean the config file actually changed?
+/// The debounced event result a `notify-debouncer-full` handler receives.
+type FsBatch = DebounceEventResult;
+
+/// A debouncer using the runtime-recommended watcher + cache.
+type Debouncer = notify_debouncer_full::Debouncer<
+    notify::RecommendedWatcher,
+    notify_debouncer_full::RecommendedCache,
+>;
+
+/// Messages the bridge thread handles: filesystem batches and watch-target
+/// updates (a reload can add/remove the credentials file or repoint a
+/// `file://` custom CSS source).
+enum WatchMsg {
+    Fs(FsBatch),
+    Targets(Vec<PathBuf>),
+}
+
+/// Does this debounced batch touch ANY watched file?
 ///
-/// Matching the watched file name is not enough on its own. The reload
-/// path reads the config back (`quiver_config::load_from_path`), and that
-/// read raises `IN_OPEN` on the very file we watch, which notify reports
-/// as `EventKind::Access`. Treating a read as a change makes every reload
-/// schedule the next one, so a single save spins the watcher at the
-/// debounce rate until the process restarts. Only change-producing kinds
-/// may pass.
-fn batch_touches_config(events: &[DebouncedEvent], file_name: &OsStr, watch_file: &Path) -> bool {
+/// Matching the watched file name is not enough on its own. The reload path
+/// reads the config back (`quiver_config::load_from_path`), and that read
+/// raises `IN_OPEN` on the very file we watch, which notify reports as
+/// `EventKind::Access`. Treating a read as a change makes every reload
+/// schedule the next one, so a single save spins the watcher at the debounce
+/// rate until the process restarts. Only change-producing kinds may pass.
+/// The same guard covers the sidecar files (separate credentials file,
+/// `file://` CSS) we now also watch AND read back on every reload.
+fn batch_touches_any(events: &[DebouncedEvent], targets: &[PathBuf]) -> bool {
     events.iter().any(|e| {
         if matches!(e.kind, EventKind::Access(_)) {
             return false;
         }
-        e.paths.iter().any(|p| p.file_name() == Some(file_name))
-            || e.paths.iter().any(|p| p == watch_file)
+        e.paths
+            .iter()
+            .any(|p| targets.iter().any(|t| path_matches(p, t)))
     })
+}
+
+/// Does `p` (as reported by notify) refer to the watched file `t`? Exact
+/// path, or same parent + same file name — notify sometimes reports a
+/// sibling spelling for atomic-save renames.
+fn path_matches(p: &Path, t: &Path) -> bool {
+    p == t || (p.file_name() == t.file_name() && p.parent() == t.parent())
+}
+
+/// Unique parent directories of the watched files — one `watch()` per dir.
+/// Atomic-save editors REPLACE the file (temp + rename); a directory watch
+/// survives that.
+fn watch_dirs(targets: &[PathBuf]) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = targets
+        .iter()
+        .map(|t| {
+            t.parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from("."))
+        })
+        .collect();
+    dirs.sort();
+    dirs.dedup();
+    dirs
+}
+
+/// (Re)build the debouncer and watch every directory holding a target.
+fn install_watch(
+    debouncer: &mut Option<Debouncer>,
+    targets: &[PathBuf],
+    fs_tx: &std::sync::mpsc::Sender<WatchMsg>,
+) {
+    let tx = fs_tx.clone();
+    let mut d = match notify_debouncer_full::new_debouncer(DEBOUNCE, None, move |res| {
+        let _ = tx.send(WatchMsg::Fs(res));
+    }) {
+        Ok(d) => d,
+        Err(e) => {
+            warn!(error = %e, "config watcher unavailable — SIGHUP still works");
+            *debouncer = None;
+            return;
+        }
+    };
+    let dirs = watch_dirs(targets);
+    for dir in &dirs {
+        if let Err(e) = d.watch(dir, notify::RecursiveMode::NonRecursive) {
+            warn!(dir = %dir.display(), error = %e, "cannot watch config directory");
+        }
+    }
+    if !dirs.is_empty() {
+        debug!(dirs = ?dirs, "watching for config changes");
+    }
+    *debouncer = Some(d);
 }
 
 pub(crate) struct ReloadCtx {
@@ -53,6 +124,8 @@ pub(crate) struct ReloadCtx {
     pub filters: crate::filters::SharedCompiled,
     pub feed_swap: mpsc::UnboundedSender<String>,
     pub fe_watch: mpsc::UnboundedSender<Option<PathBuf>>,
+    /// Re-target the config/credentials/CSS watch set after every reload.
+    pub watch_targets: mpsc::UnboundedSender<Vec<PathBuf>>,
     pub rebind: Arc<Notify>,
     /// Generation bumped on channel swap: the reward-info/coin refresher
     /// and EventSub re-target immediately (watch = multi-consumer, no
@@ -60,53 +133,59 @@ pub(crate) struct ReloadCtx {
     pub channel_changed: watch::Sender<std::time::Instant>,
 }
 
-/// Watch the config's parent directory (atomic-save editors REPLACE the
-/// file; a directory watch survives that) filtered on the file name.
-/// SIGHUP triggers the same pipeline manually.
-pub(crate) fn spawn_watcher(config_path: PathBuf, ctx: ReloadCtx, quit: CancellationToken) {
+/// Watch the config file plus its sidecars — the optional separate
+/// credentials file and a `file://` custom CSS source. Editors atomic-save
+/// by REPLACE, so we watch the parent directory of each target and filter on
+/// the file identity. The watch set is re-targetable: every reload re-derives
+/// it (a reload can add/remove the credentials file or repoint the CSS
+/// source). SIGHUP triggers the same pipeline manually where available.
+pub(crate) fn spawn_watcher(
+    config_path: PathBuf,
+    initial_targets: Vec<PathBuf>,
+    mut targets_rx: mpsc::UnboundedReceiver<Vec<PathBuf>>,
+    ctx: ReloadCtx,
+    quit: CancellationToken,
+) {
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<()>();
 
     // Bridge thread: owns the debouncer (it stops on Drop) and forwards
-    // matching events into async-land.
-    {
-        let watch_file = config_path.clone();
-        let file_name = watch_file
-            .file_name()
-            .map(std::ffi::OsStr::to_os_string)
-            .unwrap_or_default();
-        let dir: PathBuf = watch_file
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."));
-        std::thread::spawn(move || {
-            let (std_tx, std_rx) = std::sync::mpsc::channel();
-            let mut debouncer =
-                match notify_debouncer_full::new_debouncer(DEBOUNCE, None, move |res| {
-                    let _ = std_tx.send(res);
-                }) {
-                    Ok(d) => d,
-                    Err(e) => {
-                        warn!(error = %e, "config watcher unavailable — SIGHUP still works");
-                        return;
+    // matching events into async-land. Watch-target updates arrive on the
+    // same std channel (via a forwarder thread) so the bridge blocks on one
+    // receiver only.
+    std::thread::spawn(move || {
+        let (fs_tx, std_rx) = std::sync::mpsc::channel::<WatchMsg>();
+
+        // Forward control messages from async-land into the std channel.
+        {
+            let fs_tx = fs_tx.clone();
+            std::thread::spawn(move || {
+                while let Some(targets) = targets_rx.blocking_recv() {
+                    if fs_tx.send(WatchMsg::Targets(targets)).is_err() {
+                        break;
                     }
-                };
-            if let Err(e) = debouncer.watch(&dir, notify::RecursiveMode::NonRecursive) {
-                warn!(dir = %dir.display(), error = %e, "cannot watch config directory");
-                return;
-            }
-            debug!(path = %watch_file.display(), "watching for config changes");
-            for res in std_rx {
-                match res {
-                    Ok(events) => {
-                        if batch_touches_config(&events, &file_name, &watch_file) {
-                            let _ = event_tx.send(());
-                        }
+                }
+            });
+        }
+
+        let mut targets = initial_targets;
+        let mut debouncer: Option<Debouncer> = None;
+        install_watch(&mut debouncer, &targets, &fs_tx);
+
+        for msg in std_rx {
+            match msg {
+                WatchMsg::Fs(Ok(events)) => {
+                    if batch_touches_any(&events, &targets) {
+                        let _ = event_tx.send(());
                     }
-                    Err(e) => warn!(errors = ?e, "config watch error"),
+                }
+                WatchMsg::Fs(Err(errs)) => warn!(errors = ?errs, "config watch error"),
+                WatchMsg::Targets(new_targets) => {
+                    targets = new_targets;
+                    install_watch(&mut debouncer, &targets, &fs_tx);
                 }
             }
-        });
-    }
+        }
+    });
 
     tokio::spawn(async move {
         // SIGHUP where available; absent platform = never-firing future.
@@ -173,8 +252,9 @@ pub(crate) fn spawn_watcher(config_path: PathBuf, ctx: ReloadCtx, quit: Cancella
 }
 
 async fn apply_reload(path: &Path, ctx: &ReloadCtx) {
-    // 1. Load. Any failure rejects the whole reload.
-    let new_cfg: ChatConfig = match quiver_config::load_from_path(path) {
+    // 1. Load. Any failure rejects the whole reload. Uses the merging
+    //    loader so an external credentials file counts as a config input.
+    let new_cfg: ChatConfig = match crate::config::load(path) {
         Ok(c) => c,
         Err(e) => {
             warn!(error = %e, "config reload rejected (parse failed) — keeping current config");
@@ -258,6 +338,12 @@ async fn apply_reload(path: &Path, ctx: &ReloadCtx) {
     for action in &actions {
         apply_action(ctx, action, &new_live).await;
     }
+
+    // Re-derive the watch set: this reload may have added/removed the
+    // credentials file, or repointed custom_css at a different file:// source.
+    let _ = ctx
+        .watch_targets
+        .send(crate::config::watch_targets(&new_cfg, path));
 
     info!(actions = ?actions, "configuration reloaded");
 }
@@ -558,7 +644,6 @@ mod tests {
     #[test]
     fn config_watch_ignores_reads() {
         let f = watch_file();
-        let name = f.file_name().unwrap();
 
         for kind in [
             EventKind::Access(AccessKind::Open(AccessMode::Any)),
@@ -567,7 +652,7 @@ mod tests {
             EventKind::Access(AccessKind::Any),
         ] {
             assert!(
-                !batch_touches_config(&[ev(kind, &f)], name, &f),
+                !batch_touches_any(&[ev(kind, &f)], std::slice::from_ref(&f)),
                 "{kind:?} on the config must not trigger a reload"
             );
         }
@@ -577,7 +662,6 @@ mod tests {
     #[test]
     fn config_watch_reacts_to_changes() {
         let f = watch_file();
-        let name = f.file_name().unwrap();
 
         for kind in [
             EventKind::Modify(ModifyKind::Data(DataChange::Any)),
@@ -587,7 +671,7 @@ mod tests {
             EventKind::Modify(ModifyKind::Name(RenameMode::To)),
         ] {
             assert!(
-                batch_touches_config(&[ev(kind, &f)], name, &f),
+                batch_touches_any(&[ev(kind, &f)], std::slice::from_ref(&f)),
                 "{kind:?} on the config must trigger a reload"
             );
         }
@@ -598,24 +682,21 @@ mod tests {
     #[test]
     fn config_watch_ignores_other_files() {
         let f = watch_file();
-        let name = f.file_name().unwrap();
         let other = PathBuf::from("cfg").join("oauth.json");
 
-        assert!(!batch_touches_config(
+        assert!(!batch_touches_any(
             &[ev(
                 EventKind::Modify(ModifyKind::Data(DataChange::Any)),
                 &other
             )],
-            name,
-            &f
+            std::slice::from_ref(&f)
         ));
-        assert!(!batch_touches_config(
+        assert!(!batch_touches_any(
             &[
                 ev(EventKind::Access(AccessKind::Open(AccessMode::Any)), &f),
                 ev(EventKind::Modify(ModifyKind::Data(DataChange::Any)), &other),
             ],
-            name,
-            &f
+            std::slice::from_ref(&f)
         ));
     }
 
@@ -625,15 +706,59 @@ mod tests {
     #[test]
     fn config_watch_change_survives_batched_read() {
         let f = watch_file();
-        let name = f.file_name().unwrap();
 
-        assert!(batch_touches_config(
+        assert!(batch_touches_any(
             &[
                 ev(EventKind::Access(AccessKind::Open(AccessMode::Any)), &f),
                 ev(EventKind::Modify(ModifyKind::Data(DataChange::Any)), &f),
             ],
-            name,
-            &f
+            std::slice::from_ref(&f)
         ));
+    }
+
+    /// Sidecar targets (separate credentials file, a file:// CSS source)
+    /// trigger the same reload; a read of a sidecar must still be ignored so
+    /// the reload that reads it back does not feed itself.
+    #[test]
+    fn sidecar_targets_trigger_and_ignore_reads() {
+        let cfg = watch_file();
+        let creds = PathBuf::from("cfg").join("credentials.ron");
+        let css = PathBuf::from("cfg").join("custom-widget.css");
+        let targets = vec![cfg.clone(), creds.clone(), css.clone()];
+
+        for t in [&creds, &css] {
+            assert!(batch_touches_any(
+                &[ev(EventKind::Modify(ModifyKind::Data(DataChange::Any)), t)],
+                &targets
+            ));
+            assert!(!batch_touches_any(
+                &[ev(EventKind::Access(AccessKind::Read), t)],
+                &targets
+            ));
+        }
+    }
+
+    /// `watch_dirs` dedupes parent directories across targets and sorts them.
+    #[test]
+    fn watch_dirs_dedupes_and_sorts() {
+        let targets = vec![
+            PathBuf::from("cfg").join("chat.ron"),
+            PathBuf::from("cfg").join("credentials.ron"),
+            PathBuf::from("css").join("custom-widget.css"),
+        ];
+        assert_eq!(
+            watch_dirs(&targets),
+            vec![PathBuf::from("cfg"), PathBuf::from("css")]
+        );
+    }
+
+    /// Exact target path matches; same file name in a different directory
+    /// does not.
+    #[test]
+    fn path_matches_requires_same_location() {
+        let t = PathBuf::from("cfg").join("chat.ron");
+        assert!(path_matches(&PathBuf::from("cfg").join("chat.ron"), &t));
+        assert!(!path_matches(&PathBuf::from("cfg").join("other.ron"), &t));
+        assert!(!path_matches(&PathBuf::from("other").join("chat.ron"), &t));
     }
 }
