@@ -357,12 +357,11 @@ fn map_event(
     };
 
     // EventSub carries the reward title AND icon inline — no Helix lookup
-    // needed. Default-icon rewards (image null) fall back to the channel
-    // coin resolved via GQL at session start.
-    let reward_image = ev["reward"]["image"]["url_2x"]
-        .as_str()
-        .map(str::to_string)
-        .or_else(|| coin_icon.clone());
+    // needed. The reward's OWN icon only (`reward.image.url_2x`); a
+    // default-icon reward (image null) has NO reward icon. The channel coin
+    // is a distinct thing and belongs to `{points_icon}` only — never to
+    // `{reward_icon}` (that was the old single-icon contract).
+    let reward_image = ev["reward"]["image"]["url_2x"].as_str().map(str::to_string);
     Some(serde_json::json!({
         "type": "event",
         "event": {
@@ -371,6 +370,12 @@ fn map_event(
             "display_name": ev["user_name"].as_str().unwrap_or_default(),
             "reward_title": ev["reward"]["title"].as_str(),
             "reward_image": reward_image,
+            // Channel coin resolved via GQL at session start — `{points_icon}`.
+            "points_image": coin_icon.clone(),
+            // Twitch reward colour drives the banner background/border.
+            "reward_color": ev["reward"]["background_color"].as_str(),
+            // Lets the widget map the reward's display name for the name pill.
+            "reward_id": ev["reward"]["id"].as_str().unwrap_or_default(),
             "user_input": ev["user_input"].as_str().unwrap_or_default(),
         }
     }))
@@ -424,4 +429,64 @@ fn poll(phase: &str, ev: &serde_json::Value) -> Option<serde_json::Value> {
             "title": ev["title"].as_str().unwrap_or_default(),
         }
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::map_event;
+    use serde_json::json;
+
+    const REDEEM: &str = "channel.channel_points_custom_reward_redemption.add";
+
+    fn coin() -> Option<String> {
+        Some("https://cdn/coin.png".to_string())
+    }
+
+    fn redeem_payload(image: serde_json::Value) -> serde_json::Value {
+        json!({
+            "id": "red-1",
+            "user_login": "fan",
+            "user_name": "Fan",
+            "user_input": "",
+            "reward": {
+                "id": "reward-1",
+                "title": "Song",
+                "cost": 100,
+                "image": image,
+                "background_color": "#842598",
+            }
+        })
+    }
+
+    // Regression: a default-icon reward (image null) must NOT inherit the
+    // channel coin as its reward icon — the coin is `{points_icon}` only.
+    #[test]
+    fn redeem_default_icon_has_no_reward_image_but_carries_coin() {
+        let frame = map_event(REDEEM, &redeem_payload(json!(null)), &coin()).unwrap();
+        let e = &frame["event"];
+        assert_eq!(e["kind"], "redeem");
+        assert!(
+            e["reward_image"].is_null(),
+            "coin must not leak into reward_image"
+        );
+        assert_eq!(e["points_image"], "https://cdn/coin.png");
+        assert_eq!(e["reward_color"], "#842598");
+        assert_eq!(e["reward_id"], "reward-1");
+        assert_eq!(e["reward_title"], "Song");
+    }
+
+    #[test]
+    fn redeem_custom_icon_uses_url_2x() {
+        let img = json!({ "url_1x": "https://cdn/1x.png", "url_2x": "https://cdn/2x.png" });
+        let frame = map_event(REDEEM, &redeem_payload(img), &coin()).unwrap();
+        let e = &frame["event"];
+        assert_eq!(e["reward_image"], "https://cdn/2x.png");
+        assert_eq!(e["points_image"], "https://cdn/coin.png");
+    }
+
+    #[test]
+    fn redeem_without_coin_still_maps() {
+        let frame = map_event(REDEEM, &redeem_payload(json!(null)), &None).unwrap();
+        assert!(frame["event"]["points_image"].is_null());
+    }
 }
