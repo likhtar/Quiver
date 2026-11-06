@@ -1,0 +1,73 @@
+name: Windows portable build
+
+# Manual run: Actions -> "Windows portable build" -> Run workflow.
+# Tag run:  git tag v0.1.0 && git push origin v0.1.0  -> also attaches the
+#           ZIP to a GitHub Release.
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # aws-lc-sys (pulled in by reqwest -> rustls) needs cmake + nasm on
+      # Windows. cmake ships with the runner image; nasm does not.
+      - name: Install nasm
+        run: choco install nasm --no-progress -y
+
+      - name: Build quiver-chat (release)
+        run: cargo build --release -p quiver-chat
+
+      - name: Stage portable bundle
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $dist = "dist/Quiver_windows"
+          if (Test-Path dist) { Remove-Item dist -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path $dist | Out-Null
+
+          Copy-Item "target/release/quiver-chat.exe" "$dist/quiver-chat.exe"
+          Copy-Item "crates/quiver-chat/widget" "$dist/widget" -Recurse
+          Copy-Item "packaging/windows/*" "$dist/" -Recurse -Force
+
+          Write-Host "Bundle contents:"
+          Get-ChildItem -Recurse $dist | Select-Object FullName
+
+      - name: Zip bundle
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Compress-Archive -Path "dist/Quiver_windows/*" `
+                           -DestinationPath "dist/Quiver_windows.zip" -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Quiver_windows
+          path: dist/Quiver_windows.zip
+          if-no-files-found: error
+
+      - name: Attach to release (tags only)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/Quiver_windows.zip
+          generate_release_notes: true
