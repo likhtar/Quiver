@@ -15,10 +15,20 @@ body {
   display: flex;
   flex-direction: column;
   /* Anchor the message block to the bottom edge: DOM order stays
-     oldest→newest (prune/timeout work on the front), but content packs
-     to the bottom. When the oldest is removed the batch stays glued to
-     the bottom — no visual jump. Overflow clips at the TOP, newest
-     message always visible at the bottom edge. */
+     oldest→newest (prune/backfill work on the front), but content packs to
+     the bottom. When a row leaves, the batch stays glued to the bottom — no
+     visual jump. Overflow clips at the TOP, so the newest message is always
+     fully visible.
+
+     The anchor has to live on the CONTAINER, never on a row: a
+     `.msg { margin: 0 !important }` in custom_css cancels a
+     `margin-top: auto` row anchor whatever the specificity — an !important
+     declaration beats any non-important one — and the whole chat then falls
+     to the top edge. Do not move this onto `.msg:first-child`.
+
+     Overflow escaping at the block-start edge is outside the container's
+     scrollable overflow region, so scrollHeight cannot see it and stays
+     equal to clientHeight — chatOverflows() compares geometry instead. */
   justify-content: flex-end;
   gap: 4px;
   padding: 8px;
@@ -29,10 +39,15 @@ body {
   height: 100vh;
 }
 
-/* Scroll overflow mode: pinned-to-bottom scrollable chat, scrollbar hidden
+/* Scroll overflow mode: scrollable chat with the scrollbar hidden
    (programmatic scrollTop; custom_css can restyle). */
 #chat.overflow-scroll {
   overflow-y: auto;
+  /* Top-anchored on purpose: with the block packed to the bottom the scroll
+     range is zero (maxScrollTop === 0) and nothing is reachable by
+     scrolling. Over-mode prunes instead, so the bottom anchor it replaces
+     does not apply here. */
+  justify-content: flex-start;
   scrollbar-width: none; /* Firefox */
 }
 #chat.overflow-scroll::-webkit-scrollbar {
