@@ -282,4 +282,23 @@ mod tests {
             vec![Action::RefreshCss, Action::BroadcastMeta]
         );
     }
+
+    /// Overrides are part of FiltersConfig (PartialEq), so editing ONLY
+    /// the rules must recompile the engine matchers — no other action.
+    #[test]
+    fn override_change_reapplies_filters() {
+        use crate::config::{FilterOverride, OverrideAction};
+
+        let a = live("a:1", None, "c", Some("id"), 18, 30, 60);
+        let mut b = a.clone();
+        assert_eq!(planned_actions(&a, &b), Vec::new());
+        b.filters.overrides = vec![FilterOverride {
+            action: OverrideAction::Allow,
+            user_id: Some("1538701825".to_string()),
+            username: None,
+            display_name: None,
+            content: Some("(?i)^!шіхтар(?: |$)".to_string()),
+        }];
+        assert_eq!(planned_actions(&a, &b), vec![Action::ApplyFilters]);
+    }
 }

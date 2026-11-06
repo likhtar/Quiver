@@ -238,6 +238,153 @@ fn empty_filter_regex_item_is_rejected() {
     );
 }
 
+/// Ground truth by hand: overrides parse field-by-field; a config
+/// WITHOUT the block stays valid and defaults to zero rules (the field
+/// is additive — old configs keep working unchanged).
+#[test]
+fn overrides_parse_and_absent_means_empty() {
+    let raw = r##"
+(
+    server: ( listen: "127.0.0.1:1", ),
+    twitch: ( channel: "chan", ),
+    theme: (
+        font_size_px: 18,
+        max_messages: 30,
+        message_lifetime_secs: 60,
+    ),
+    filters: (
+        user_id: Some(( mode: denylist, items: ["1538701825"] )),
+        overrides: [
+            (
+                action: allow,
+                user_id: Some("1538701825"),
+                content: Some("(?i)^!шіхтар(?: |$)"),
+            ),
+            (
+                action: deny,
+                username: Some("^spam_bot$"),
+                display_name: Some("^Spam"),
+            ),
+        ],
+    ),
+)
+"##;
+    let cfg: ChatConfig = parse_str(raw).expect("overrides must parse");
+    assert_eq!(cfg.validate(), Vec::new());
+
+    let rules = &cfg.filters.overrides;
+    assert_eq!(rules.len(), 2);
+    assert_eq!(rules[0].action, quiver_chat::config::OverrideAction::Allow);
+    assert_eq!(rules[0].user_id.as_deref(), Some("1538701825"));
+    assert_eq!(rules[0].content.as_deref(), Some("(?i)^!шіхтар(?: |$)"));
+    assert_eq!(rules[0].username, None);
+    assert_eq!(rules[0].display_name, None);
+    assert_eq!(rules[1].action, quiver_chat::config::OverrideAction::Deny);
+    assert_eq!(rules[1].user_id, None);
+    assert_eq!(rules[1].content, None);
+    assert_eq!(rules[1].username.as_deref(), Some("^spam_bot$"));
+    assert_eq!(rules[1].display_name.as_deref(), Some("^Spam"));
+
+    // Backward compat: no overrides key anywhere → empty rule list.
+    let old_raw = r##"
+(
+    server: ( listen: "127.0.0.1:1", ),
+    twitch: ( channel: "chan", ),
+    theme: (
+        font_size_px: 18,
+        max_messages: 30,
+        message_lifetime_secs: 60,
+    ),
+    filters: (
+        content: Some(( mode: denylist, items: ["^!"] )),
+    ),
+)
+"##;
+    let old: ChatConfig = parse_str(old_raw).expect("pre-overrides config must parse");
+    assert!(old.filters.overrides.is_empty(), "absent = no rules");
+    assert_eq!(old.validate(), Vec::new());
+}
+
+/// Empty / non-compiling override conditions are HARD validation errors
+/// with per-field paths — same contract as the base dimensions (#11).
+#[test]
+fn invalid_override_conditions_report_exact_issue_paths() {
+    let raw = r##"
+(
+    server: ( listen: "127.0.0.1:1", ),
+    twitch: ( channel: "chan", ),
+    theme: (
+        font_size_px: 18,
+        max_messages: 30,
+        message_lifetime_secs: 60,
+    ),
+    filters: (
+        overrides: [
+            ( action: allow, content: Some("") ),
+            ( action: deny, username: Some("[unclosed") ),
+            ( action: deny, user_id: Some("") ),
+        ],
+    ),
+)
+"##;
+    let cfg: ChatConfig = parse_str(raw).expect("must parse");
+    let issues = cfg.validate();
+    let mut paths: Vec<&str> = issues.iter().map(|i| i.path.as_str()).collect();
+    paths.sort_unstable();
+    assert_eq!(
+        paths,
+        vec![
+            "filters.overrides[0].content",
+            "filters.overrides[1].username",
+            "filters.overrides[2].user_id",
+        ],
+        "got: {issues:?}"
+    );
+    assert!(
+        issues.iter().all(|i| i.message.contains("empty pattern")
+            || i.message.contains("empty user id")
+            || i.message.contains("invalid regex")),
+        "messages must name the reason, got: {issues:?}"
+    );
+}
+
+/// An unknown action name never reaches validate() — the enum rejects it
+/// at parse time (the message_type-style hard error for `action`).
+#[test]
+fn unknown_override_action_is_a_parse_error() {
+    let raw = r##"
+(
+    server: ( listen: "127.0.0.1:1", ),
+    twitch: ( channel: "chan", ),
+    theme: (
+        font_size_px: 18,
+        max_messages: 30,
+        message_lifetime_secs: 60,
+    ),
+    filters: (
+        overrides: [ ( action: maybe, content: Some("x") ) ],
+    ),
+)
+"##;
+    let err = parse_str::<ChatConfig>(raw).expect_err("unknown action must be refused");
+    assert!(
+        err.to_string().contains("maybe"),
+        "error should name the bad action: {err}"
+    );
+}
+
+/// The commented sample must surface the new list (discoverability
+/// contract: `--sample-config` is the tool's interface).
+#[test]
+fn sample_config_exposes_overrides_list() {
+    let text = quiver_config::generate_default::<ChatConfig>("quiver-chat --sample-config")
+        .expect("generation succeeds");
+    assert!(
+        text.contains("overrides: []"),
+        "sample config must show the overrides list, got no `overrides: []`"
+    );
+}
+
 // ---- role_css -------------------------------------------------------------
 
 // Ground truth by hand: three roles, exact strings preserved.

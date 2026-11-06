@@ -1,8 +1,11 @@
-//! Message filtering: compiled allowlist/denylist dimensions.
+//! Message filtering: override rules plus compiled allowlist/denylist
+//! dimensions.
 //!
 //! Pure evaluation logic — no I/O, no state. `CompiledFilters::compile`
 //! turns config into matchers; `permits` is the single decision point
-//! the engine calls for every message/event.
+//! the engine calls for every message/event: override rules decide
+//! first (first match wins), the AND-combined dimensions only for
+//! messages no rule claimed.
 
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
@@ -10,7 +13,7 @@ use std::sync::{Arc, RwLock};
 use quiver_twitch::Badge;
 use regex::Regex;
 
-use crate::config::{FiltersConfig, ListFilter, Mode};
+use crate::config::{FilterOverride, FiltersConfig, ListFilter, Mode, OverrideAction};
 
 /// Compiled filters shared between the server (initial/reload) and the
 /// engine pump. `None` = no filtering configured.
@@ -137,6 +140,82 @@ pub struct PermitCtx<'a> {
     pub content: &'a str,
 }
 
+/// One compiled override rule. Absent conditions are wildcards; a rule
+/// with no conditions at all never matches (parity with an inactive
+/// dimension: empty items = the rule does nothing).
+#[derive(Debug)]
+struct CompiledOverride {
+    allow: bool,
+    user_id: Option<String>,
+    username: Option<Regex>,
+    display_name: Option<Regex>,
+    content: Option<Regex>,
+}
+
+impl CompiledOverride {
+    fn compile(rule: &FilterOverride) -> Result<Self, String> {
+        // Same defense-in-depth as RegexDim::compile: validate() already
+        // rejects these, but programmatic construction must not slip
+        // through — an empty pattern matches every message.
+        let compile_pat = |field: &str, pat: &Option<String>| -> Result<Option<Regex>, String> {
+            match pat {
+                None => Ok(None),
+                Some(p) if p.is_empty() => Err(format!(
+                    "filters.overrides: empty pattern in {field:?} matches every message \u{2014} \
+                     refusing (likely a config error)"
+                )),
+                Some(p) => Ok(Some(Regex::new(p).map_err(|e| format!("{p:?}: {e}"))?)),
+            }
+        };
+        if rule.user_id.as_deref() == Some("") {
+            return Err(
+                "filters.overrides: empty user id matches nothing \u{2014} refusing \
+                 (likely a config error)"
+                    .to_string(),
+            );
+        }
+        Ok(Self {
+            allow: rule.action == OverrideAction::Allow,
+            user_id: rule.user_id.clone(),
+            username: compile_pat("username", &rule.username)?,
+            display_name: compile_pat("display_name", &rule.display_name)?,
+            content: compile_pat("content", &rule.content)?,
+        })
+    }
+
+    /// All PRESENT conditions must match; no condition = inactive rule.
+    fn matches(&self, ctx: &PermitCtx) -> bool {
+        let mut any = false;
+        if let Some(id) = &self.user_id {
+            // Exact match — regex metacharacters stay literal, same as
+            // the user_id base dimension.
+            any = true;
+            if ctx.user_id != id {
+                return false;
+            }
+        }
+        if let Some(re) = &self.username {
+            any = true;
+            if !re.is_match(ctx.login) {
+                return false;
+            }
+        }
+        if let Some(re) = &self.display_name {
+            any = true;
+            if !re.is_match(ctx.display_name) {
+                return false;
+            }
+        }
+        if let Some(re) = &self.content {
+            any = true;
+            if !re.is_match(ctx.content) {
+                return false;
+            }
+        }
+        any
+    }
+}
+
 /// Compiled, ready-to-evaluate filters. `None` fields are inactive.
 #[derive(Debug, Default)]
 pub struct CompiledFilters {
@@ -146,6 +225,8 @@ pub struct CompiledFilters {
     content: Option<RegexDim>,
     message_type: Option<ExactDim>,
     role: Option<ExactDim>,
+    /// Per-user rules, config order — evaluated BEFORE the dimensions.
+    overrides: Vec<CompiledOverride>,
 }
 
 impl CompiledFilters {
@@ -164,14 +245,26 @@ impl CompiledFilters {
             content: compile_regex_dim(&cfg.content)?,
             message_type: exact(&cfg.message_type),
             role: exact(&cfg.role),
+            overrides: cfg
+                .overrides
+                .iter()
+                .map(CompiledOverride::compile)
+                .collect::<Result<Vec<_>, _>>()?,
         })
     }
 
     /// The single decision point. True = render.
     ///
-    /// Dimensions combine with AND; inactive dimensions always pass.
+    /// Order: override rules FIRST (config order, FIRST match wins and
+    /// its allow/deny is the final decision), then the dimensions. The
+    /// dimensions combine with AND; inactive dimensions always pass.
     /// An empty items list makes its dimension inactive by construction.
     pub fn permits(&self, ctx: &PermitCtx) -> bool {
+        for rule in &self.overrides {
+            if rule.matches(ctx) {
+                return rule.allow;
+            }
+        }
         if let Some(dim) = &self.display_name
             && !dim.passes(ctx.display_name)
         {
@@ -216,6 +309,7 @@ impl CompiledFilters {
 
     /// Convenience gate for events produced OUTSIDE the engine pump (the
     /// redemption poller, EventSub): builds a PermitCtx from scalar fields.
+    /// Sees the same override rules and dimensions as the pump.
     pub fn permits_event(
         compiled: &SharedCompiled,
         kind: MsgKind,
@@ -245,7 +339,7 @@ impl CompiledFilters {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ListFilter;
+    use crate::config::{FilterOverride, ListFilter, OverrideAction};
 
     fn list(mode: Mode, items: &[&str]) -> ListFilter {
         ListFilter {
@@ -465,5 +559,299 @@ mod tests {
         c.content = Some(list(Mode::Denylist, &["nightbot", ""]));
         let err = CompiledFilters::compile(&c).expect_err("empty pattern must be refused");
         assert!(err.contains("empty pattern"), "unexpected error: {err}");
+    }
+
+    // ---- overrides (per-user content rules) --------------------------------
+
+    /// Compact rule builder; uncovered conditions stay None (wildcard).
+    fn rule(
+        action: OverrideAction,
+        user_id: Option<&str>,
+        content: Option<&str>,
+    ) -> FilterOverride {
+        FilterOverride {
+            action,
+            user_id: user_id.map(str::to_string),
+            username: None,
+            display_name: None,
+            content: content.map(str::to_string),
+        }
+    }
+
+    /// Scenario 1 (ground truth by hand): hide EVERYTHING from likh_bot
+    /// via a user_id denylist, but the override allow rule hands
+    /// `!шіхтар` (with arguments, case-insensitive) back to him.
+    #[test]
+    fn override_allow_beats_user_id_denylist() {
+        let mut c = cfg();
+        c.user_id = Some(list(Mode::Denylist, &["1538701825"]));
+        c.overrides.push(rule(
+            OverrideAction::Allow,
+            Some("1538701825"),
+            Some("(?i)^!шіхтар(?: |$)"),
+        ));
+        let f = CompiledFilters::compile(&c).unwrap();
+
+        let bot = ("likh_bot", "LikH_bot", "1538701825");
+        // The exception: bot's command renders despite the denylist.
+        assert!(f.permits(&ctx(
+            MsgKind::Message,
+            bot.0,
+            bot.1,
+            bot.2,
+            &[],
+            "!шіхтар dnb set"
+        )));
+        // Everything else from the bot stays hidden.
+        assert!(!f.permits(&ctx(MsgKind::Message, bot.0, bot.1, bot.2, &[], "hello")));
+        assert!(!f.permits(&ctx(MsgKind::Message, bot.0, bot.1, bot.2, &[], "!діджей")));
+        // Prefix trap: !шіхтарішка is a different command, not the exception.
+        assert!(!f.permits(&ctx(
+            MsgKind::Message,
+            bot.0,
+            bot.1,
+            bot.2,
+            &[],
+            "!шіхтарішка"
+        )));
+        // A different user is unaffected (rule misses, denylist passes).
+        assert!(f.permits(&ctx(
+            MsgKind::Message,
+            "likh_tar",
+            "Likh_tar",
+            "999",
+            &[],
+            "!шіхтар"
+        )));
+    }
+
+    /// Scenario 2 (ground truth by hand): deny "купити крипту" for
+    /// everyone EXCEPT one moderator — allow-override carves the hole
+    /// out of the content denylist.
+    #[test]
+    fn override_allow_carves_exception_out_of_content_denylist() {
+        let mut c = cfg();
+        c.content = Some(list(Mode::Denylist, &["(?i)купити крипту"]));
+        let mut mod_exception = rule(OverrideAction::Allow, None, Some("(?i)купити крипту"));
+        mod_exception.username = Some("^likh_tar$".to_string());
+        c.overrides.push(mod_exception);
+        let f = CompiledFilters::compile(&c).unwrap();
+
+        // The moderator passes the override (user + content both match).
+        assert!(f.permits(&ctx(
+            MsgKind::Message,
+            "likh_tar",
+            "Likh_tar",
+            "1",
+            &[],
+            "КУПИТИ КРИПТУ зараз!"
+        )));
+        // Everyone else hits the denylist.
+        assert!(!f.permits(&ctx(
+            MsgKind::Message,
+            "shill",
+            "Shill",
+            "2",
+            &[],
+            "купити крипту"
+        )));
+        // The exception is content-scoped too: moderator's normal text
+        // falls through to the dimensions and passes them.
+        assert!(f.permits(&ctx(
+            MsgKind::Message,
+            "likh_tar",
+            "Likh_tar",
+            "1",
+            &[],
+            "привіт"
+        )));
+        assert!(f.permits(&ctx(MsgKind::Message, "shill", "Shill", "2", &[], "привіт")));
+    }
+
+    /// Scenario 3 (ground truth by hand): show the secret text ONLY from
+    /// user 1 — allow rule first, content-only deny rule second. Proves
+    /// FIRST-match ordering: with last-match semantics the swapped list
+    /// would decide the same way.
+    #[test]
+    fn first_matching_override_wins_not_last() {
+        let show_only_for_one = rule(OverrideAction::Allow, Some("1"), Some("секрет"));
+        let hide_for_everyone = rule(OverrideAction::Deny, None, Some("секрет"));
+
+        let mut c = cfg();
+        c.overrides = vec![show_only_for_one.clone(), hide_for_everyone.clone()];
+        let f = CompiledFilters::compile(&c).unwrap();
+        // User 1 hits the FIRST rule (allow) — the deny below never runs.
+        assert!(f.permits(&ctx(MsgKind::Message, "one", "One", "1", &[], "секрет")));
+        // Anyone else skips rule 1, hits rule 2 (deny).
+        assert!(!f.permits(&ctx(MsgKind::Message, "two", "Two", "2", &[], "секрет")));
+        // Unrelated text matches no rule → base dimensions (empty) pass.
+        assert!(f.permits(&ctx(MsgKind::Message, "two", "Two", "2", &[], "hello")));
+
+        // Swap the order: now the deny rule claims user 1's message too.
+        c.overrides = vec![hide_for_everyone, show_only_for_one];
+        let f = CompiledFilters::compile(&c).unwrap();
+        assert!(!f.permits(&ctx(MsgKind::Message, "one", "One", "1", &[], "секрет")));
+    }
+
+    /// Scenario 4 (ground truth by hand): show everything from user 777
+    /// (user_id allowlist) EXCEPT the spam content — an override deny
+    /// must beat an allowlist dimension too.
+    #[test]
+    fn override_deny_beats_allowlist_dimensions() {
+        let mut c = cfg();
+        c.user_id = Some(list(Mode::Allowlist, &["777", "888"]));
+        c.overrides
+            .push(rule(OverrideAction::Deny, Some("777"), Some("(?i)spam")));
+        let f = CompiledFilters::compile(&c).unwrap();
+
+        // 777 keeps everything but the overridden content.
+        assert!(f.permits(&ctx(MsgKind::Message, "a", "A", "777", &[], "hello")));
+        assert!(!f.permits(&ctx(MsgKind::Message, "a", "A", "777", &[], "SPAM!")));
+        // The deny rule is user-scoped: 888's spam passes the allowlist
+        // untouched (the rule's user condition misses).
+        assert!(f.permits(&ctx(MsgKind::Message, "b", "B", "888", &[], "spam")));
+        // Users outside the allowlist still fail it.
+        assert!(!f.permits(&ctx(MsgKind::Message, "c", "C", "999", &[], "hello")));
+    }
+
+    /// Parity with the dimensions: a rule with no conditions is INACTIVE
+    /// (the analogue of empty items) — a condition-less deny must not
+    /// become "drop all chat".
+    #[test]
+    fn rule_without_conditions_is_inactive() {
+        let mut c = cfg();
+        c.user_id = Some(list(Mode::Denylist, &["1"]));
+        c.overrides.push(rule(OverrideAction::Deny, None, None));
+        let f = CompiledFilters::compile(&c).unwrap();
+
+        // The empty deny rule decides nothing...
+        assert!(f.permits(&ctx(MsgKind::Message, "u", "U", "2", &[], "anything")));
+        // ...and the base denylist still applies.
+        assert!(!f.permits(&ctx(MsgKind::Message, "u", "U", "1", &[], "anything")));
+    }
+
+    /// user_id in a rule is EXACT — regex metacharacters are literal,
+    /// matching the base dimension's contract.
+    #[test]
+    fn override_user_id_is_exact_not_regex() {
+        let mut c = cfg();
+        c.overrides
+            .push(rule(OverrideAction::Deny, Some("7*"), None));
+        let f = CompiledFilters::compile(&c).unwrap();
+
+        assert!(f.permits(&ctx(MsgKind::Message, "u", "U", "71092938", &[], "")));
+        assert!(!f.permits(&ctx(MsgKind::Message, "u", "U", "7*", &[], "")));
+    }
+
+    /// login and display-name conditions compile as regexes and AND with
+    /// each other inside one rule when both are present.
+    #[test]
+    fn override_matches_username_and_display_name_regex() {
+        let mut by_login = rule(OverrideAction::Deny, None, None);
+        by_login.username = Some("^nightbot$".to_string());
+        let mut by_display = rule(OverrideAction::Deny, None, None);
+        by_display.display_name = Some("^Stream.*".to_string());
+
+        let mut c = cfg();
+        c.overrides = vec![by_login, by_display];
+        let f = CompiledFilters::compile(&c).unwrap();
+
+        assert!(!f.permits(&ctx(
+            MsgKind::Message,
+            "nightbot",
+            "NightBot",
+            "1",
+            &[],
+            "hi"
+        )));
+        assert!(!f.permits(&ctx(
+            MsgKind::Message,
+            "streamelements",
+            "StreamElements",
+            "2",
+            &[],
+            "hi"
+        )));
+        assert!(f.permits(&ctx(
+            MsgKind::Message,
+            "melodieee__",
+            "Melodieee__",
+            "3",
+            &[],
+            "hi"
+        )));
+    }
+
+    #[test]
+    fn invalid_override_regex_is_a_compile_error() {
+        let mut c = cfg();
+        c.overrides
+            .push(rule(OverrideAction::Deny, None, Some("[unclosed")));
+        assert!(CompiledFilters::compile(&c).is_err());
+    }
+
+    /// Defense-in-depth for overrides (#11 parity): empty patterns are
+    /// refused even when validation is bypassed by programmatic
+    /// construction — content, username/display_name (match everything)
+    /// and user_id (can never match → dead rule).
+    #[test]
+    fn empty_override_conditions_refuse_to_compile() {
+        let mut c = cfg();
+        c.overrides.push(rule(OverrideAction::Deny, None, Some("")));
+        let err = CompiledFilters::compile(&c).expect_err("empty pattern must be refused");
+        assert!(err.contains("empty pattern"), "unexpected error: {err}");
+
+        c.overrides = vec![rule(OverrideAction::Allow, Some(""), None)];
+        let err = CompiledFilters::compile(&c).expect_err("empty user id must be refused");
+        assert!(err.contains("empty user id"), "unexpected error: {err}");
+
+        let mut bad_login = rule(OverrideAction::Deny, None, None);
+        bad_login.username = Some(String::new());
+        c.overrides = vec![bad_login];
+        let err = CompiledFilters::compile(&c).expect_err("empty pattern must be refused");
+        assert!(err.contains("empty pattern"), "unexpected error: {err}");
+    }
+
+    /// The redemption/EventSub gate must see the same overrides as the
+    /// pump — it calls permits() on the shared compiled filters.
+    #[test]
+    fn permits_event_sees_overrides() {
+        let mut c = cfg();
+        c.user_id = Some(list(Mode::Denylist, &["1538701825"]));
+        c.overrides.push(rule(
+            OverrideAction::Allow,
+            Some("1538701825"),
+            Some("(?i)^!шіхтар(?: |$)"),
+        ));
+        let shared: SharedCompiled = std::sync::Arc::new(std::sync::RwLock::new(Some(
+            CompiledFilters::compile(&c).unwrap(),
+        )));
+
+        assert!(CompiledFilters::permits_event(
+            &shared,
+            MsgKind::Redeem,
+            "likh_bot",
+            "LikH_bot",
+            "1538701825",
+            "!шіхтар настрій"
+        ));
+        assert!(!CompiledFilters::permits_event(
+            &shared,
+            MsgKind::Redeem,
+            "likh_bot",
+            "LikH_bot",
+            "1538701825",
+            "будь-який текст"
+        ));
+        // No compiled filters = everything passes (unchanged contract).
+        let empty: SharedCompiled = std::sync::Arc::new(std::sync::RwLock::new(None));
+        assert!(CompiledFilters::permits_event(
+            &empty,
+            MsgKind::Follow,
+            "u",
+            "U",
+            "9",
+            ""
+        ));
     }
 }
