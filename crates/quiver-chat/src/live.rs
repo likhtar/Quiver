@@ -122,6 +122,9 @@ pub fn planned_actions(old: &LiveConfig, new: &LiveConfig) -> Vec<Action> {
         out.push(Action::ResolveBadges);
         broadcast_meta = true;
     }
+    if old.theme.event_names != new.theme.event_names {
+        broadcast_meta = true;
+    }
     if broadcast_meta {
         out.push(Action::BroadcastMeta);
     }
@@ -159,6 +162,7 @@ mod tests {
                 role_css: None,
                 overflow_mode: crate::config::OverflowMode::Prune,
                 event_banner_secs: 8,
+                event_names: None,
             },
             emotes: EmotesConfig::default(),
             filters: crate::config::FiltersConfig::default(),

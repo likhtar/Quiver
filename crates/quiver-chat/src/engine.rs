@@ -63,6 +63,8 @@ pub enum WireEvent {
         /// Reward icon URL (Twitch coin icon) when resolvable; the widget
         /// falls back to a text icon.
         reward_image: Option<String>,
+        reward_color: Option<String>,
+        reward_id: String,
         user_input: String,
     },
 }
@@ -126,6 +128,8 @@ impl From<RedeemEvent> for WireEvent {
             // untyped fallback renders as "a channel point reward".
             reward_title: None,
             reward_image: None,
+            reward_color: None,
+            reward_id: r.reward_id.clone(),
             user_input: r.user_input,
         }
     }
@@ -499,12 +503,12 @@ pub async fn pump(
                         let _ = redeem_deduper
                             .lock()
                             .map(|mut d| d.mark_irc(&r.user_login, &r.user_id, &r.reward_id));
-                        let (reward_title, mut reward_image) = reward_titles
+                        let (reward_title, mut reward_image, reward_color) = reward_titles
                             .read()
                             .ok()
                             .and_then(|m| m.get(&r.reward_id).cloned())
-                            .map(|info| (Some(info.title), info.image_url))
-                            .unwrap_or((None, None));
+                            .map(|info| (Some(info.title), info.image_url, info.background_color))
+                            .unwrap_or((None, None, None));
                         // Cache miss = a reward added to the channel
                         // mid-stream: trigger the reactive refresher so the
                         // NEXT redemption carries fresh info.
@@ -529,9 +533,16 @@ pub async fn pump(
                             "redeem frame emitted"
                         );
                         let mut wire = WireEvent::from(r);
-                        if let WireEvent::Redeem { reward_title: rt, reward_image: ri, .. } = &mut wire {
+                        if let WireEvent::Redeem {
+                            reward_title: rt,
+                            reward_image: ri,
+                            reward_color: rc,
+                            ..
+                        } = &mut wire
+                        {
                             *rt = reward_title;
                             *ri = reward_image;
+                            *rc = reward_color;
                         }
                         send_event(&tx, wire);
                     }
