@@ -1,0 +1,45 @@
+// Портабельний конфіг Quiver. Усі шляхи всередині ВІДНОСНІ — працює з будь-якої папки.
+// Секрети ТУТ НЕ зберігаються: вони в окремому файлі credentials.ron
+// (скопіюй credentials.ron.example -> credentials.ron і впиши свої).
+//
+// Що змінити перед першим запуском:
+//   1. channel  -> ім'я твого Twitch-каналу (маленькими літерами)
+//   2. скопіювати credentials.ron.example у credentials.ron (для бейджів/емотів)
+(
+    server: (
+        listen: "127.0.0.1:4783",
+        widget_dist: Some("widget"),
+    ),
+    twitch: (
+        channel: "CHANGE_ME",
+        // Окремий файл із client_id / client_secret. Якщо його немає —
+        // застосунок просто працює без API Twitch (без бейджів/емотів каналу).
+        credentials_file: Some("credentials.ron"),
+    ),
+    theme: (
+        font_size_px: 27,
+        max_messages: 30,
+        message_lifetime_secs: 60,
+        // Стиль чату — у custom-widget.css поруч. Редагуй його, сервер
+        // підхопить зміни наживо (перезапуск не потрібен).
+        custom_css: Some(( uri: "file://custom-widget.css" )),
+        role_css: None,
+        overflow_mode: prune,
+    ),
+    emotes: (
+        twitch: true,
+        unicode: true,
+        seventv: true,
+        bttv: true,
+        ffz: true,
+    ),
+    filters: (
+        display_name: None,
+        username: None,
+        user_id: None,
+        content: None,
+        message_type: None,
+        role: None,
+    ),
+    badges: None,
+)

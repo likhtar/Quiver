@@ -479,6 +479,7 @@ let css_cache_dir = cfg
         });
     }
 
+    let (watch_tx, watch_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<PathBuf>>();
     let ctx = crate::reload::ReloadCtx {
         live: live.clone(),
         messages: messages.clone(),
@@ -486,6 +487,7 @@ let css_cache_dir = cfg
         badges: badges.clone(),
         feed_swap: feed.swap_tx,
         fe_watch: fe_watch_tx,
+        watch_targets: watch_tx,
         custom_badges: custom_badges.clone(),
         custom_css: custom_css.clone(),
         emotes: emotes.clone(),
@@ -493,7 +495,8 @@ let css_cache_dir = cfg
         rebind: rebind.clone(),
         channel_changed: swap_tx,
     };
-    crate::reload::spawn_watcher(config_path, ctx, quit.clone());
+    let initial_targets = crate::config::watch_targets(&cfg, &config_path);
+    crate::reload::spawn_watcher(config_path, initial_targets, watch_rx, ctx, quit.clone());
 
     loop {
         let addr = live.read().unwrap().listen.clone();

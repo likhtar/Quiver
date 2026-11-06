@@ -6,3 +6,4 @@ dist/
 *.log
 *.local.ron
 .idea
+credentials.ron

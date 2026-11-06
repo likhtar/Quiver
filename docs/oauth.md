@@ -11,6 +11,10 @@ no browser on the machine running Quiver.
 quiver-chat --config chat.ron --auth
 ```
 
+`--auth` needs `client_id`/`client_secret`. Quiver reads them from either the
+inline `twitch` fields or the separate `twitch.credentials_file` (see
+[Badges → Twitch credentials](badges.md#twitch-credentials)).
+
 1. Quiver prints a URL (`https://www.twitch.tv/activate…`) and a code.
 2. Open the URL on any device, enter the code, approve the scopes.
 3. Tokens are stored at `$XDG_CONFIG_HOME/quiver/oauth.json` (0600) — never
