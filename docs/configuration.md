@@ -51,7 +51,7 @@ A config has five top-level sections:
 |---|---|---|
 | `server` | listen address, widget frontend directory | [Getting Started](getting-started.md) |
 | `twitch` | channel login, API credentials | [Badges](badges.md#twitch-credentials) |
-| `theme` | typography, overflow, custom & per-role CSS | [Custom CSS](custom-css.md) |
+| `theme` | typography, overflow, custom & per-role CSS, event templates | [Custom CSS](custom-css.md), [Events](events.md#event-templates) |
 | `emotes` | per-provider emote toggles | [Emotes](emotes.md) |
 | `filters` | allow/deny lists per dimension | [Filters](filters.md) |
 | `badges` | custom badge definitions & assignments | [Badges](badges.md) |

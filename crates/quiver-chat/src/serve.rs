@@ -350,7 +350,7 @@ let css_cache_dir = cfg
                                 .read()
                                 .ok()
                                 .and_then(|m| m.get(&r.reward_id).cloned());
-                            let (title, mut image, color) = info
+                            let (title, image, color) = info
                                 .map(|i| (Some(i.title), i.image_url, i.background_color))
                                 .unwrap_or((None, None, None));
                             // Cache miss = reward added mid-stream: trigger
@@ -358,10 +358,9 @@ let css_cache_dir = cfg
                             if title.is_none() {
                                 miss_for_poll.notify_one();
                             }
-                            // Default-icon rewards: channel coin fallback.
-                            if image.is_none() {
-                                image = coin_for_poll.read().ok().and_then(|c| c.clone());
-                            }
+                            // Channel-points coin, kept apart from the reward
+                            // icon (`{points_icon}` only).
+                            let points = coin_for_poll.read().ok().and_then(|c| c.clone());
                             if !crate::filters::CompiledFilters::permits_event(
                                 &filters_for_poll,
                                 crate::filters::MsgKind::Redeem,
@@ -380,6 +379,7 @@ let css_cache_dir = cfg
                                     "display_name": r.user_display_name,
                                     "reward_title": title,
                                     "reward_image": image,
+                                    "points_image": points,
                                     "reward_color": color,
                                     "reward_id": r.reward_id,
                                     "user_input": r.user_input,
@@ -443,6 +443,24 @@ let css_cache_dir = cfg
                 "",
             )
         });
+        // Reward icon + colour for EventSub redeems: the EventSub payload's
+        // reward object carries no image/background_color, so look them up in
+        // the shared Helix reward cache (the same map the poller reads). A
+        // miss (reward created mid-stream) pokes the refresher so the next
+        // redeem renders whole.
+        let reward_titles_for_es = reward_titles.clone();
+        let miss_for_es = miss_gen.clone();
+        let reward_lookup: Arc<dyn Fn(&str) -> Option<quiver_twitch::RewardInfo> + Send + Sync> =
+            Arc::new(move |reward_id: &str| {
+                let info = reward_titles_for_es
+                    .read()
+                    .ok()
+                    .and_then(|m| m.get(reward_id).cloned());
+                if info.is_none() {
+                    miss_for_es.notify_one();
+                }
+                info
+            });
         tokio::spawn(async move {
             // EventSub re-targets on channel swap: per session it resolves
             // the CURRENT channel (login via the resolver closure),
@@ -454,6 +472,7 @@ let css_cache_dir = cfg
                 tx_for_es,
                 quit,
                 gate,
+                reward_lookup,
                 deduper_for_es,
                 swap_for_es,
             );
@@ -890,6 +909,7 @@ pub(crate) fn meta_value(
         },
         "custom_badges": custom_badges,
         "event_names": live.theme.event_names,
+        "event_layout": live.theme.event_layout,
     })
 }
 
@@ -1409,6 +1429,7 @@ mod tests {
                 overflow_mode: crate::config::OverflowMode::Prune,
                 event_banner_secs: 8,
                 event_names: None,
+                event_layout: crate::config::EventLayout::default(),
             },
             emotes: EmotesConfig::default(),
         }

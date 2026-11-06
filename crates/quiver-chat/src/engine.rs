@@ -13,8 +13,8 @@ use tokio::sync::Notify;
 
 use crate::filters::MsgKind;
 use quiver_twitch::{
-    Badge, ChatMessage, EmoteRef, Event, GifRef, GiftSubEvent, MessageDeleted, MysteryGiftEvent,
-    RaidEvent, RedeemEvent, RewardInfo, SubEvent,
+    Badge, ChatMessage, CheerEvent, EmoteRef, Event, GifRef, GiftSubEvent, MessageDeleted,
+    MysteryGiftEvent, RaidEvent, RedeemEvent, RewardInfo, SubEvent,
 };
 use serde::Serialize;
 use tracing::{info, warn};
@@ -63,9 +63,18 @@ pub enum WireEvent {
         /// Reward icon URL (Twitch coin icon) when resolvable; the widget
         /// falls back to a text icon.
         reward_image: Option<String>,
+        /// Channel-points icon URL (the channel's coin), resolved
+        /// anonymously via GQL. Used by the `{points_icon}` template token.
+        points_image: Option<String>,
         reward_color: Option<String>,
         reward_id: String,
         user_input: String,
+    },
+    Cheer {
+        user_login: String,
+        display_name: String,
+        bits: u64,
+        message: String,
     },
 }
 
@@ -128,9 +137,21 @@ impl From<RedeemEvent> for WireEvent {
             // untyped fallback renders as "a channel point reward".
             reward_title: None,
             reward_image: None,
+            points_image: None,
             reward_color: None,
             reward_id: r.reward_id.clone(),
             user_input: r.user_input,
+        }
+    }
+}
+
+impl From<CheerEvent> for WireEvent {
+    fn from(c: CheerEvent) -> Self {
+        Self::Cheer {
+            user_login: c.user_login,
+            display_name: c.display_name,
+            bits: c.bits,
+            message: c.text,
         }
     }
 }
@@ -503,7 +524,7 @@ pub async fn pump(
                         let _ = redeem_deduper
                             .lock()
                             .map(|mut d| d.mark_irc(&r.user_login, &r.user_id, &r.reward_id));
-                        let (reward_title, mut reward_image, reward_color) = reward_titles
+                        let (reward_title, reward_image, reward_color) = reward_titles
                             .read()
                             .ok()
                             .and_then(|m| m.get(&r.reward_id).cloned())
@@ -515,14 +536,14 @@ pub async fn pump(
                         if reward_title.is_none() {
                             reward_miss_notify.notify_one();
                         }
-                        // Default-icon rewards: fall back to the channel coin
-                        // (fetched anonymously via GQL by the serve layer).
-                        if reward_image.is_none() {
-                            reward_image = coin_icon
-                                .read()
-                                .ok()
-                                .and_then(|c| c.clone());
-                        }
+                        // Channel-points coin (fetched anonymously via GQL by
+                        // the serve layer). Kept separate from `reward_image`:
+                        // a reward without a custom icon has NO reward icon
+                        // (the coin belongs to `{points_icon}` only).
+                        let points_image = coin_icon
+                            .read()
+                            .ok()
+                            .and_then(|c| c.clone());
                         info!(
                             reward_cached = reward_titles
                                 .read()
@@ -536,15 +557,31 @@ pub async fn pump(
                         if let WireEvent::Redeem {
                             reward_title: rt,
                             reward_image: ri,
+                            points_image: pi,
                             reward_color: rc,
                             ..
                         } = &mut wire
                         {
                             *rt = reward_title;
                             *ri = reward_image;
+                            *pi = points_image;
                             *rc = reward_color;
                         }
                         send_event(&tx, wire);
+                    }
+                }
+                Some(Event::Cheer(c)) => {
+                    // Cheer text is user content: content filters apply.
+                    if permitted(
+                        &filters,
+                        MsgKind::Cheer,
+                        &c.user_login,
+                        &c.display_name,
+                        &c.user_id,
+                        &[],
+                        &c.text,
+                    ) {
+                        send_event(&tx, c);
                     }
                 }
                 Some(_) => {}
@@ -694,6 +731,20 @@ mod tests {
         let v = serde_json::to_value(&gift).expect("serializes");
         assert_eq!(v["kind"], "mystery_gift");
         assert!(v["gifter_login"].is_null());
+
+        let cheer = WireEvent::from(CheerEvent {
+            channel_login: "chan".into(),
+            user_id: "7".into(),
+            user_login: "cheerer".into(),
+            display_name: "Cheerer".into(),
+            bits: 500,
+            text: "nice".into(),
+        });
+        let v = serde_json::to_value(&cheer).expect("serializes");
+        assert_eq!(v["kind"], "cheer");
+        assert_eq!(v["bits"], 500);
+        assert_eq!(v["display_name"], "Cheerer");
+        assert_eq!(v["message"], "nice");
     }
 
     /// Ground truth BY HAND: fresh message within lifetime never swept.

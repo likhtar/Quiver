@@ -11,8 +11,8 @@ use twitch_irc::{ClientConfig, SecureTCPTransport, TwitchIRCClient};
 
 use crate::error::TwitchError;
 use crate::events::{
-    Badge, ChatMessage, EmoteRef, Event, GifRef, GiftSubEvent, MessageDeleted, MysteryGiftEvent,
-    RaidEvent, RedeemEvent, SubEvent,
+    Badge, ChatMessage, CheerEvent, EmoteRef, Event, GifRef, GiftSubEvent, MessageDeleted,
+    MysteryGiftEvent, RaidEvent, RedeemEvent, SubEvent,
 };
 
 type Client = TwitchIRCClient<SecureTCPTransport, StaticLoginCredentials>;
@@ -55,23 +55,7 @@ impl IrcChatSource {
     pub async fn next_event(&mut self) -> Option<Event> {
         loop {
             match self.incoming.recv().await? {
-                ServerMessage::Privmsg(pm) => {
-                    // Channel point redemption: PRIVMSG rides a
-                    // custom-reward-id tag. Twitch sends the reward NAME in
-                    // neither IRC tags nor this message — resolve via Helix
-                    // when channel OAuth exists.
-                    if let Some(reward_id) = pm.source.tags.0.get("custom-reward-id") {
-                        return Some(Event::Redeem(RedeemEvent {
-                            channel_login: pm.channel_login,
-                            user_id: pm.sender.id,
-                            user_login: pm.sender.login,
-                            display_name: pm.sender.name,
-                            reward_id: reward_id.to_string(),
-                            user_input: pm.message_text,
-                        }));
-                    }
-                    return Some(Event::ChatMessage(map_privmsg(pm)));
-                }
+                ServerMessage::Privmsg(pm) => return Some(map_privmsg_event(pm)),
                 ServerMessage::ClearMsg(cm) => {
                     return Some(Event::MessageDeleted(MessageDeleted {
                         message_id: cm.message_id,
@@ -96,6 +80,37 @@ impl IrcChatSource {
             }
         }
     }
+}
+
+/// Map a PRIVMSG onto the right [`Event`]: a channel-point redemption
+/// (carries `custom-reward-id`), a cheer (carries `bits`), else a plain
+/// chat message. Redemptions win if both tags somehow coexist.
+fn map_privmsg_event(pm: PrivmsgMessage) -> Event {
+    // Channel point redemption: PRIVMSG rides a custom-reward-id tag.
+    // Twitch sends the reward NAME in neither IRC tags nor this message —
+    // resolve via Helix when channel OAuth exists.
+    if let Some(reward_id) = pm.source.tags.0.get("custom-reward-id") {
+        return Event::Redeem(RedeemEvent {
+            channel_login: pm.channel_login,
+            user_id: pm.sender.id,
+            user_login: pm.sender.login,
+            display_name: pm.sender.name,
+            reward_id: reward_id.to_string(),
+            user_input: pm.message_text,
+        });
+    }
+    // Cheer (bits): PRIVMSG carrying a `bits` tag (positive integer).
+    if let Some(bits) = pm.bits {
+        return Event::Cheer(CheerEvent {
+            channel_login: pm.channel_login,
+            user_id: pm.sender.id,
+            user_login: pm.sender.login,
+            display_name: pm.sender.name,
+            bits,
+            text: pm.message_text,
+        });
+    }
+    Event::ChatMessage(map_privmsg(pm))
 }
 
 /// Map a library PRIVMSG onto Quiver's own model.
@@ -313,6 +328,44 @@ mod tests {
         // Non-reply messages must carry None.
         let plain = map_privmsg(parse_line_to_privmsg(LINE));
         assert!(plain.reply_parent.is_none());
+    }
+
+    #[test]
+    fn maps_cheer_privmsg_to_cheer_event() {
+        // bits=500 tag → Event::Cheer with the amount and text preserved.
+        let line = "@badge-info=;badges=bits/100;color=;display-name=Cheerer;emotes=;id=c-1;login=cheerer;mod=0;room-id=11148817;subscriber=0;tmi-sent-ts=1594545155039;turbo=0;user-id=555;bits=500 :cheerer!cheerer@cheerer.tmi.twitch.tv PRIVMSG #chan :Cheer500 nice";
+        let event = map_privmsg_event(parse_line_to_privmsg(line));
+        match event {
+            Event::Cheer(c) => {
+                assert_eq!(c.bits, 500);
+                assert_eq!(c.display_name, "Cheerer");
+                assert_eq!(c.user_login, "cheerer");
+                assert_eq!(c.user_id, "555");
+                assert_eq!(c.text, "Cheer500 nice");
+                assert_eq!(c.channel_login, "chan");
+            }
+            other => panic!("expected Cheer, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn maps_custom_reward_privmsg_to_redeem_event() {
+        let line = "@badge-info=;badges=;color=;custom-reward-id=abc-reward;display-name=Redeemer;emotes=;id=r-1;login=redeemer;mod=0;room-id=11148817;subscriber=0;tmi-sent-ts=1594545155039;turbo=0;user-id=666 :redeemer!redeemer@redeemer.tmi.twitch.tv PRIVMSG #chan :song please";
+        match map_privmsg_event(parse_line_to_privmsg(line)) {
+            Event::Redeem(r) => {
+                assert_eq!(r.reward_id, "abc-reward");
+                assert_eq!(r.user_input, "song please");
+            }
+            other => panic!("expected Redeem, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn maps_plain_privmsg_to_chat_message() {
+        match map_privmsg_event(parse_line_to_privmsg(LINE)) {
+            Event::ChatMessage(cm) => assert_eq!(cm.text, "hey Kappa world"),
+            other => panic!("expected ChatMessage, got {other:?}"),
+        }
     }
 
     /// Official Twitch IRC-docs example: a Tier2/3 GIF Keyboard message.
