@@ -899,6 +899,7 @@ pub(crate) fn meta_value(
             "max_messages": live.theme.max_messages,
             "overflow_mode": live.theme.overflow_mode,
             "event_banner_secs": live.theme.event_banner_secs,
+            "gigantify_scale": live.theme.gigantify_scale,
         },
         "badges": badges,
         "custom_css": custom_css,
@@ -1433,6 +1434,7 @@ mod tests {
                 event_banner_secs: 8,
                 event_names: None,
                 event_layout: crate::config::EventLayout::default(),
+                gigantify_scale: 4,
             },
             emotes: EmotesConfig::default(),
         }

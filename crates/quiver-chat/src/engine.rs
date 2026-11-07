@@ -75,6 +75,9 @@ pub enum WireEvent {
         display_name: String,
         bits: u64,
         message: String,
+        /// Twitch emote ranges inside `message` (UTF-16, end-exclusive).
+        /// Rendered gigantified by the widget.
+        emotes: Vec<WireEmote>,
     },
 }
 
@@ -152,6 +155,7 @@ impl From<CheerEvent> for WireEvent {
             display_name: c.display_name,
             bits: c.bits,
             message: c.text,
+            emotes: c.emotes.iter().map(WireEmote::from).collect(),
         }
     }
 }
@@ -739,6 +743,7 @@ mod tests {
             display_name: "Cheerer".into(),
             bits: 500,
             text: "nice".into(),
+            emotes: vec![],
         });
         let v = serde_json::to_value(&cheer).expect("serializes");
         assert_eq!(v["kind"], "cheer");

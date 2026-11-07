@@ -101,6 +101,15 @@ fn map_privmsg_event(pm: PrivmsgMessage) -> Event {
     }
     // Cheer (bits): PRIVMSG carrying a `bits` tag (positive integer).
     if let Some(bits) = pm.bits {
+        let emotes = pm
+            .emotes
+            .into_iter()
+            .map(|e| EmoteRef {
+                id: e.id,
+                start: e.char_range.start,
+                end: e.char_range.end,
+            })
+            .collect();
         return Event::Cheer(CheerEvent {
             channel_login: pm.channel_login,
             user_id: pm.sender.id,
@@ -108,6 +117,7 @@ fn map_privmsg_event(pm: PrivmsgMessage) -> Event {
             display_name: pm.sender.name,
             bits,
             text: pm.message_text,
+            emotes,
         });
     }
     Event::ChatMessage(map_privmsg(pm))
