@@ -168,6 +168,15 @@ body {
   margin: 0 1px;
 }
 
+/* Gigantified cheer emotes: Twitch's "gigantified emote" is 4x the normal
+   size (112px vs 28px). The multiplier comes from theme.gigantify_scale via
+   --gigantify-scale on #chat, so custom CSS can restyle it freely. */
+.emote.gigantify {
+  height: calc(1.4em * var(--gigantify-scale, 4));
+  max-width: 100%;
+  margin: 2px 4px;
+}
+
 /* Twitch GIF Keyboard messages (Tier 2/3). Sized/capped, overrideable. */
 .gif {
   max-height: 5em;

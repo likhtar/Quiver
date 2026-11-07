@@ -408,10 +408,19 @@ pub struct ThemeConfig {
     /// Unknown tokens are hard config errors. Absent = built-in defaults.
     #[serde(default)]
     pub event_layout: EventLayout,
+    /// Scale factor for gigantified emotes (cheer/bits messages).
+    /// Twitch default: 4 (112x112px vs normal 28x28px).
+    /// Range: 1 (normal) to 8 (max).
+    #[serde(default = "default_gigantify_scale")]
+    pub gigantify_scale: u32,
 }
 
 fn default_event_banner_secs() -> u64 {
     8
+}
+
+fn default_gigantify_scale() -> u32 {
+    4
 }
 
 /// Tokens allowed in the redeem banner template (`theme.event_layout.redeem`).
@@ -523,6 +532,7 @@ impl Default for ThemeConfig {
             event_banner_secs: default_event_banner_secs(),
             event_names: None,
             event_layout: EventLayout::default(),
+            gigantify_scale: default_gigantify_scale(),
         }
     }
 }
@@ -756,6 +766,12 @@ impl Validate for ChatConfig {
             self.theme.event_banner_secs <= 3600,
             "theme.event_banner_secs",
             "must be at most 3600 (0 = banners stay until scrolled away)",
+            &mut out,
+        );
+        require(
+            (1..=8).contains(&self.theme.gigantify_scale),
+            "theme.gigantify_scale",
+            "must be within 1..=8 (1 = normal, 4 = Twitch default gigantified)",
             &mut out,
         );
         validate_event_template(

@@ -15,6 +15,8 @@ let maxMessages = 30;
 let roleCss = {}; // badge set id -> css snippet for message rows
 let eventNames = {}; // event kind/reward -> display name
 let eventLayout = {}; // event kind -> "{token}" banner template
+// Cheer-message emote scale (Twitch gigantified emote = 4x). From theme.
+let gigantifyScale = 4;
 
 // provider tag -> {emote name -> url}; always fully populated, gating is
 // done client-side via emoteFlags so disabled providers STRIP tokens.
@@ -177,6 +179,27 @@ function gifElement(g, alt) {
   return img;
 }
 
+// Build a Twitch emote <img>. `scale` > 1 adds the `gigantify` class; the
+// actual size comes from CSS (`calc(1.4em * var(--gigantify-scale))`), so
+// custom CSS can restyle it without fighting an inline height.
+// Animated (`emotesv2_*`) ids fall back to the static v1 path on error.
+function emoteMedia(r, alt, scale) {
+  const img = document.createElement("img");
+  img.className = scale > 1 ? "emote gigantify" : "emote";
+  const id = encodeURIComponent(r.id);
+  if (r.id.startsWith("emotesv2_")) {
+    img.src = EMOTE_CDN_V2.replace("{id}", id);
+    img.onerror = () => {
+      img.onerror = null;
+      img.src = EMOTE_CDN.replace("{id}", id);
+    };
+  } else {
+    img.src = EMOTE_CDN.replace("{id}", id);
+  }
+  img.alt = alt;
+  return img;
+}
+
 // Split text on emote AND gif ranges: plain slices as text nodes, ranges as
 // imgs (emotes) / gif media. Ranges are UTF-16 code-unit offsets (Twitch's
 // wire convention), end-exclusive — JS String.slice is UTF-16, so slicing
@@ -218,21 +241,7 @@ function renderText(m) {
     if (r.start > cursor) appendTokens(wrap, m.text.slice(cursor, r.start));
     if (r.kind === "emote") {
       if (emoteFlags.twitch) {
-        const img = document.createElement("img");
-        img.className = "emote";
-        const id = encodeURIComponent(r.id);
-        if (r.id.startsWith("emotesv2_")) {
-          // Animated variant; static v1 as fallback if v2 is unavailable.
-          img.src = EMOTE_CDN_V2.replace("{id}", id);
-          img.onerror = () => {
-            img.onerror = null;
-            img.src = EMOTE_CDN.replace("{id}", id);
-          };
-        } else {
-          img.src = EMOTE_CDN.replace("{id}", id);
-        }
-        img.alt = m.text.slice(r.start, r.end);
-        wrap.append(img);
+        wrap.append(emoteMedia(r, m.text.slice(r.start, r.end), 1));
       } else {
         // Twitch emotes disabled: the range is DROPPED entirely —
         // disabling a provider means its emotes Vanish from rendered
@@ -249,6 +258,27 @@ function renderText(m) {
   }
   if (cursor < m.text.length) appendTokens(wrap, m.text.slice(cursor));
   return wrap;
+}
+
+// Render a cheer message's text, turning its Twitch emote ranges into
+// GIGANTIFIED images (the whole point of a bits cheer). Third-party tokens
+// stay plain text: Twitch sends ranges only for its own emotes, and the
+// gigantify contract is first-party. Twitch-emote flag off = drop ranges.
+function renderCheerText(ev) {
+  const span = el("span", "event-text");
+  const text = ev.message || "";
+  const ranges = (ev.emotes || []).slice().sort((a, b) => a.start - b.start);
+  let cursor = 0;
+  for (const r of ranges) {
+    if (r.start < cursor || r.end > text.length) continue; // malformed/overlap
+    if (r.start > cursor) appendTokens(span, text.slice(cursor, r.start));
+    if (emoteFlags.twitch) {
+      span.append(emoteMedia(r, text.slice(r.start, r.end), gigantifyScale));
+    }
+    cursor = r.end;
+  }
+  if (cursor < text.length) appendTokens(span, text.slice(cursor));
+  return span;
 }
 
 function renderMessage(m) {
@@ -499,6 +529,10 @@ function applyMeta(meta) {
     if (meta.theme.event_banner_secs !== undefined) {
       eventBannerMs = Number(meta.theme.event_banner_secs) * 1000;
     }
+    if (meta.theme.gigantify_scale) {
+      gigantifyScale = Number(meta.theme.gigantify_scale) || 1;
+    }
+    chat.style.setProperty("--gigantify-scale", String(gigantifyScale));
   }
   applyUserStyles(meta.role_css, meta.custom_css);
 }
@@ -659,11 +693,21 @@ function tokenNode(token, ev) {
     case "input":
       return el("span", "event-text", ev.user_input || "");
     case "message":
-      return el("span", "event-text", ev.message || "");
+      // Cheer messages can carry Twitch emote ranges — render them
+      // gigantified (the whole point of a bits cheer). Other kinds keep
+      // plain text as before.
+      return ev.kind === "cheer" ? renderCheerText(ev) : el("span", "event-text", ev.message || "");
     case "input_clause":
       return ev.user_input ? el("span", "event-text", `: ${ev.user_input}`) : null;
     case "message_clause":
-      return ev.message ? el("span", "event-text", `: ${ev.message}`) : null;
+      if (!ev.message) return null;
+      if (ev.kind !== "cheer") return el("span", "event-text", `: ${ev.message}`);
+      {
+        const frag = document.createDocumentFragment();
+        frag.append(document.createTextNode(": "));
+        frag.append(renderCheerText(ev));
+        return frag;
+      }
     case "bits":
       return el("span", "event-text", String(ev.bits ?? ""));
     case "points_icon":
@@ -739,9 +783,20 @@ function showEvent(ev) {
     // interleave). See theme.event_layout in the config.
     body.append(renderTemplate(tpl, ev));
   } else {
-    // Built-in fallback: one leading icon + one text run.
+    // Built-in fallback: one leading icon + one text run. Cheer messages
+    // keep their emote ranges (gigantified) instead of flattening to text.
     body.append(defaultEventIcon(ev, style));
-    body.append(el("span", "event-text", eventText(ev)));
+    if (ev.kind === "cheer" && (ev.emotes || []).length) {
+      const base = el(
+        "span",
+        "event-text",
+        `${ev.display_name} cheered ${ev.bits} bits${ev.message ? ": " : ""}`,
+      );
+      if (ev.message) base.append(renderCheerText(ev));
+      body.append(base);
+    } else {
+      body.append(el("span", "event-text", eventText(ev)));
+    }
   }
   banner.append(body);
 

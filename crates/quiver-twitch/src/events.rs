@@ -135,6 +135,10 @@ pub struct CheerEvent {
     pub bits: u64,
     /// The cheer message text (may be empty).
     pub text: String,
+    /// Twitch emote ranges inside `text` (UTF-16 offsets, end-exclusive).
+    /// Cheer messages are PRIVMSGs, so they can carry emotes; the widget
+    /// renders them gigantified (Twitch's 4x cheer emote size).
+    pub emotes: Vec<EmoteRef>,
 }
 
 /// An incoming raid. From USERNOTICE `raid`.

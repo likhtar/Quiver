@@ -167,6 +167,7 @@ mod tests {
                 event_banner_secs: 8,
                 event_names: None,
                 event_layout: crate::config::EventLayout::default(),
+                gigantify_scale: 4,
             },
             emotes: EmotesConfig::default(),
             filters: crate::config::FiltersConfig::default(),
