@@ -63,6 +63,8 @@ pub struct ChatMessage {
     pub text: String,
     /// Present when this message is a Twitch reply thread member.
     pub reply_parent: Option<ReplyParent>,
+    /// Twitch "Gigantify an Emote" power-up (msg-id=gigantified-emote-message).
+    pub gigantified: bool,
 }
 
 /// A new (or renewed) subscription. From USERNOTICE `sub`/`resub`.

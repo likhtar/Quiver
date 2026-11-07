@@ -261,6 +261,8 @@ pub struct RenderedMessage {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub gifs: Vec<WireGif>,
     pub badges: Vec<WireBadge>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub gigantified: bool,
 }
 
 impl From<ChatMessage> for RenderedMessage {
@@ -277,6 +279,7 @@ impl From<ChatMessage> for RenderedMessage {
             emotes: cm.emotes.iter().map(WireEmote::from).collect(),
             gifs: cm.gifs.iter().map(WireGif::from).collect(),
             badges: cm.badges.iter().map(WireBadge::from).collect(),
+            gigantified: false,
         }
     }
 }
@@ -625,6 +628,7 @@ mod tests {
             emotes: vec![],
             gifs: vec![],
             badges: vec![],
+            gigantified: false,
         }
     }
 
@@ -790,6 +794,7 @@ mod tests {
             }],
             text: "hey Kappa world".into(),
             reply_parent: None,
+            gigantified: false,
         };
         let r = RenderedMessage::from(cm);
         assert_eq!(
