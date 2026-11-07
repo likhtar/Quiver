@@ -151,6 +151,8 @@ fn map_privmsg(pm: PrivmsgMessage) -> ChatMessage {
             .collect(),
         text: pm.message_text,
         gifs: parse_gifs_tag(pm.source.tags.0.get("gifs").map(String::as_str)),
+        gigantified: pm.source.tags.0.get("msg-id").map(String::as_str)
+            == Some("gigantified-emote-message"),
         reply_parent: pm.reply_parent.map(|rp| crate::events::ReplyParent {
             message_id: rp.message_id,
             user_login: rp.reply_parent_user.login,
@@ -311,8 +313,14 @@ mod tests {
             units.push(units.last().unwrap() + c.len_utf16());
         }
         // First char boundary at/after `start`, and at/after `end`.
-        let s = units.iter().position(|&u| u >= start).unwrap_or(units.len() - 1);
-        let e = units.iter().position(|&u| u >= end).unwrap_or(units.len() - 1);
+        let s = units
+            .iter()
+            .position(|&u| u >= start)
+            .unwrap_or(units.len() - 1);
+        let e = units
+            .iter()
+            .position(|&u| u >= end)
+            .unwrap_or(units.len() - 1);
         text.chars().skip(s).take(e.saturating_sub(s)).collect()
     }
 

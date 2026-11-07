@@ -241,7 +241,7 @@ function renderText(m) {
     if (r.start > cursor) appendTokens(wrap, m.text.slice(cursor, r.start));
     if (r.kind === "emote") {
       if (emoteFlags.twitch) {
-        wrap.append(emoteMedia(r, m.text.slice(r.start, r.end), 1));
+        wrap.append(emoteMedia(r, m.text.slice(r.start, r.end), m.gigantified ? gigantifyScale : 1));
       } else {
         // Twitch emotes disabled: the range is DROPPED entirely —
         // disabling a provider means its emotes Vanish from rendered
@@ -284,6 +284,8 @@ function renderCheerText(ev) {
 function renderMessage(m) {
   const row = el("div", "msg");
   row.dataset.id = m.id;
+
+  if (m.gigantified) row.classList.add("gigantified"); // CSS hook
 
   // Per-role classes: one per configured badge id the sender carries.
   for (const b of m.badges || []) {
