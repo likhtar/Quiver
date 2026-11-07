@@ -279,7 +279,7 @@ impl From<ChatMessage> for RenderedMessage {
             emotes: cm.emotes.iter().map(WireEmote::from).collect(),
             gifs: cm.gifs.iter().map(WireGif::from).collect(),
             badges: cm.badges.iter().map(WireBadge::from).collect(),
-            gigantified: false,
+            gigantified: cm.gigantified,
         }
     }
 }
