@@ -689,21 +689,21 @@ function eventText(ev) {
 function tokenNode(token, ev) {
   switch (token) {
     case "user":
-      return el("span", "event-text", ev.display_name || "");
+      return el("span", "event-text event-user", ev.display_name || "");
     case "reward":
-      return el("span", "event-text", ev.reward_title || "a channel point reward");
+      return el("span", "event-text event-reward", ev.reward_title || "a channel point reward");
     case "input":
-      return el("span", "event-text", ev.user_input || "");
+      return el("span", "event-text event-input", ev.user_input || "");
     case "message":
       // Cheer messages can carry Twitch emote ranges — render them
       // gigantified (the whole point of a bits cheer). Other kinds keep
       // plain text as before.
-      return ev.kind === "cheer" ? renderCheerText(ev) : el("span", "event-text", ev.message || "");
+      return ev.kind === "cheer" ? renderCheerText(ev) : el("span", "event-text event-message", ev.message || "");
     case "input_clause":
-      return ev.user_input ? el("span", "event-text", `: ${ev.user_input}`) : null;
+      return ev.user_input ? el("span", "event-text event-input-clause", `: ${ev.user_input}`) : null;
     case "message_clause":
       if (!ev.message) return null;
-      if (ev.kind !== "cheer") return el("span", "event-text", `: ${ev.message}`);
+      if (ev.kind !== "cheer") return el("span", "event-text event-message-clause", `: ${ev.message}`);
       {
         const frag = document.createDocumentFragment();
         frag.append(document.createTextNode(": "));
@@ -711,7 +711,7 @@ function tokenNode(token, ev) {
         return frag;
       }
     case "bits":
-      return el("span", "event-text", String(ev.bits ?? ""));
+      return el("span", "event-text event-bits", String(ev.bits ?? ""));
     case "points_icon":
       // Channel coin from Twitch (custom image, else the default orb).
       // Rendered only when known; never a locally drawn substitute.
@@ -773,7 +773,14 @@ function showEvent(ev) {
     eventName = eventNames[ev.kind];
   }
   if (showName && eventName) {
-    banner.append(el("span", "event-name", eventName));
+    // Назва пігулки — теж {token}-шаблон: напр. "{points_icon} {user}" дає
+    // монетку каналу + нік замість статичного тексту. Текст без токенів лишається текстом.
+    const pill = el("span", "event-name");
+    pill.append(renderTemplate(eventName, ev));
+    // Не показуємо порожню пігулку (напр. токен без значення, коли монетка ще не завантажена)
+    if (pill.querySelector("*") || pill.textContent.trim().length > 0) {
+      banner.append(pill);
+    }
   }
   // Sub messages keep their text as a tooltip (title), as before.
   if (ev.kind === "sub" && ev.message) banner.title = ev.message;

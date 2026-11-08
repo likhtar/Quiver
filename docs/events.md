@@ -76,8 +76,11 @@ Notes:
   different images. Both are fetched from Twitch; neither is drawn locally.
   A reward without its own icon simply has no `{reward_icon}`.
 - `event_layout.event_name` (`true` by default) toggles the event-name pill
-  for `redeem`/`cheer` only. Other kinds keep their pill. The pill text
-  comes from `theme.event_names` (`reward:<id>`, else the kind).
+  for `redeem`/`cheer` only. Other kinds keep their pill. The pill content
+  comes from `theme.event_names` (`reward:<id>`, else the kind); values are
+  also `{token}` templates (e.g. `"{points_icon} {user}"`), with plain text
+  remaining plain text. Empty pills (e.g. unresolved `{points_icon}` alone)
+  are suppressed.
 - An empty template string falls back to the built-in default for that kind.
 
 Related surfaces:
